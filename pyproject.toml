@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "logisim-mcp"
+version = "0.1.0"
+description = "MCP server for Logisim Evolution — design and verify digital circuits with an LLM."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "logisim-mcp contributors" }]
+keywords = ["mcp", "logisim", "circuit", "digital-logic", "llm", "education"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Education",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+dependencies = [
+    "mcp[cli]>=1.6.0",
+    "lxml>=5.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/virsi/logisim-mcp"
+Repository = "https://github.com/virsi/logisim-mcp"
+Issues = "https://github.com/virsi/logisim-mcp/issues"
+
+[project.scripts]
+logisim-mcp = "logisim_mcp.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/logisim_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/**",
+    "tests/**",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
