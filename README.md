@@ -1,5 +1,19 @@
 # logisim-mcp
 
+<p align="center">
+  <a href="https://boosty.to/virsi/donate">
+    <img alt="Donate on Boosty" src="https://img.shields.io/badge/Boosty-Donate-f15f2c?style=for-the-badge&logo=boosty&logoColor=white">
+  </a>
+  <a href="https://yoomoney.ru/fundraise/1HOILVESO53.260514">
+    <img alt="Donate via YooMoney" height="40" src=".github/assets/yoomoney.png">
+  </a>
+</p>
+
+> If `logisim-mcp` saved you an evening of wiring NAND gates by hand,
+> consider [supporting the project on Boosty](https://boosty.to/virsi/donate)
+> or [donating via YooMoney](https://yoomoney.ru/fundraise/1HOILVESO53.260514) —
+> it keeps the lights on and the builders coming.
+
 [![tests](https://github.com/virsi/logisim-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/virsi/logisim-mcp/actions/workflows/ci.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
