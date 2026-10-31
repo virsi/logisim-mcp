@@ -16,7 +16,8 @@ from logisim_mcp.tools.highlevel_tools import (
     build_ripple_adder,
 )
 from logisim_mcp.tools.io_tools import create_circuit_file
-from logisim_mcp.tools.sim_tools import verify_truth_table
+from logisim_mcp.tools.describe_tools import check_circuit_drc
+from logisim_mcp.tools.sim_tools import simulate_sequential, verify_truth_table
 
 requires_logisim = pytest.mark.skipif(
     not SETTINGS.logisim_jar.exists(),
@@ -76,7 +77,9 @@ def test_ripple_adder_4bit(fresh: Path) -> None:
             for cin in (0, 1):
                 s = (a + b + cin) & 0xF
                 co = (a + b + cin) >> 4
-                rows.append([str(a), str(b), str(cin), str(s), str(co)])
+                # Hex keeps the column radix stable. A later decimal such as
+                # ``8`` is rejected once the first row locked the column to binary.
+                rows.append([f"0x{a:X}", f"0x{b:X}", str(cin), f"0x{s:X}", str(co)])
     # Use [N] notation so Logisim treats A/B/Sum as 4-bit buses, not 1-bit
     # scalars masked to their LSB.
     res = verify_truth_table(
@@ -114,13 +117,13 @@ def test_decoder_2bit(fresh: Path) -> None:
     res = verify_truth_table(
         str(fresh),
         "decoder",
-        inputs=["Sel"],
+        inputs=["Sel[2]"],
         outputs=["Q0", "Q1", "Q2", "Q3"],
         rows=[
-            ["0", "1", "0", "0", "0"],
-            ["1", "0", "1", "0", "0"],
-            ["2", "0", "0", "1", "0"],
-            ["3", "0", "0", "0", "1"],
+            ["0x0", "1", "0", "0", "0"],
+            ["0x1", "0", "1", "0", "0"],
+            ["0x2", "0", "0", "1", "0"],
+            ["0x3", "0", "0", "0", "1"],
         ],
     )
     assert res["ok"], res["failures"]
@@ -135,16 +138,16 @@ def test_comparator_4bit(fresh: Path) -> None:
             gt = "1" if a > b else "0"
             eq = "1" if a == b else "0"
             lt = "1" if a < b else "0"
-            rows.append([str(a), str(b), gt, eq, lt])
+            rows.append([f"0x{a:X}", f"0x{b:X}", gt, eq, lt])
     res = verify_truth_table(
-        str(fresh), "comparator", ["A", "B"], ["Gt", "Eq", "Lt"], rows
+        str(fresh), "comparator", ["A[4]", "B[4]"], ["Gt", "Eq", "Lt"], rows
     )
     assert res["ok"], res["failures"]
 
 
 def test_build_from_truth_table_xor_synth(fresh: Path) -> None:
-    """SOP synthesis must produce a file that parses; correctness checked
-    end-to-end below."""
+    """SOP synthesis must produce a file that parses. Logisim must accept
+    the NOT gates (see the load test below)."""
     build_from_truth_table(
         str(fresh),
         inputs=["A", "B"],
@@ -156,6 +159,92 @@ def test_build_from_truth_table_xor_synth(fresh: Path) -> None:
             ["1", "1", "0"],
         ],
     )
+
+
+@requires_logisim
+def test_truth_table_not_gates_load(fresh: Path) -> None:
+    """NOT gates must use size 30. size 50 is rejected and the gate vanishes."""
+    from logisim_mcp.tools.sim_tools import count_components
+
+    build_from_truth_table(
+        str(fresh),
+        inputs=["A", "B"],
+        outputs=["Y"],
+        rows=[
+            ["0", "0", "0"],
+            ["0", "1", "1"],
+            ["1", "0", "1"],
+            ["1", "1", "0"],
+        ],
+    )
+    res = count_components(str(fresh), circuit="synthesized")
+    assert res["ok"], res["stderr"]
+    assert res["components"].get("NOT Gate", 0) == 2
+    report = check_circuit_drc(str(fresh), circuit="synthesized", probe_errors=True)
+    assert report["shorted_nets"] == []
+    sim = simulate_sequential(
+        str(fresh),
+        "synthesized",
+        ["A", "B"],
+        ["Y"],
+        [
+            ["0", "0", "0"],
+            ["0", "1", "1"],
+            ["1", "0", "1"],
+            ["1", "1", "0"],
+        ],
+    )
+    assert sim["ok"], sim
+
+
+@requires_logisim
+def test_truth_table_keeps_every_minterm(fresh: Path) -> None:
+    """A 3-input function with six 1s used to drop the sixth OR input."""
+    rows = []
+    for value in range(8):
+        bits = [(value >> shift) & 1 for shift in (2, 1, 0)]
+        output = "0" if tuple(bits) in ((0, 0, 0), (1, 1, 1)) else "1"
+        rows.append([str(bit) for bit in bits] + [output])
+    build_from_truth_table(str(fresh), ["A", "B", "C"], ["Y"], rows)
+    report = check_circuit_drc(str(fresh), circuit="synthesized", probe_errors=True)
+    assert report["shorted_nets"] == []
+    sim = simulate_sequential(str(fresh), "synthesized", ["A", "B", "C"], ["Y"], rows)
+    assert sim["ok"], sim
+    nand = [
+        ["0", "0", "1"],
+        ["0", "1", "1"],
+        ["1", "0", "1"],
+        ["1", "1", "0"],
+    ]
+    build_from_truth_table(
+        str(fresh), ["A", "B"], ["Y"], nand, circuit_name="nand"
+    )
+    nand_report = check_circuit_drc(str(fresh), circuit="nand", probe_errors=True)
+    assert nand_report["shorted_nets"] == []
+    nand_sim = simulate_sequential(str(fresh), "nand", ["A", "B"], ["Y"], nand)
+    assert nand_sim["ok"], nand_sim
+
+
+@requires_logisim
+def test_register_sequential_vector(fresh: Path) -> None:
+    """A rising edge on Clk captures D. ``<set>``/``<seq>`` keep state."""
+    build_register(str(fresh), bits=1)
+    res = verify_truth_table(
+        str(fresh),
+        "register",
+        inputs=["D", "Clk", "En", "Rst"],
+        outputs=["Q"],
+        rows=[
+            ["0", "0", "1", "1", "0"],
+            ["1", "0", "1", "0", "0"],
+            ["1", "1", "1", "0", "1"],
+            ["0", "0", "1", "0", "1"],
+            ["0", "1", "1", "0", "0"],
+        ],
+        sets=[1, 1, 1, 1, 1],
+        steps=[1, 2, 3, 4, 5],
+    )
+    assert res["ok"], res
 
 
 def test_register_builds(fresh: Path) -> None:

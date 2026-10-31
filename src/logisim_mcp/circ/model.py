@@ -55,10 +55,15 @@ class Component:
 
 @dataclass
 class Wire:
-    """A ``<wire from="(x1,y1)" to="(x2,y2)"/>`` segment."""
+    """A ``<wire from="(x1,y1)" to="(x2,y2)"/>`` segment.
+
+    Extra attributes (5.0.0's ``buswidthpos``, for example) are kept so a
+    round-trip does not strip them.
+    """
 
     start: Point
     end: Point
+    attrs: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -83,7 +88,7 @@ class Circuit:
 class Project:
     """The whole ``<project>`` document."""
 
-    source: str = "4.0.0"
+    source: str = "5.0.0"
     version: str = "1.0"
     libs: list[Lib] = field(default_factory=list)
     main: str = "main"

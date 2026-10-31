@@ -1,160 +1,300 @@
-// EXPERIMENTAL — partially working sequential test runner.
+// Headless sequential runner for Logisim Evolution 5.0.0.
 //
-// Demonstrates the approach: open a .circ headless, drive input pins
-// programmatically, ask the Simulator to propagate, read output pins.
-// The current implementation does NOT reliably observe edge-triggered
-// updates on Register/Counter because Logisim 4.0.0's Simulator
-// expects a Swing event-dispatch thread (Propagator.propagate must run
-// on its own propagation thread). A future version should either
-// drive Propagator directly via Simulator's internal Runnable queue
-// or run Logisim with `-Djava.awt.headless=false` and a virtual frame
-// buffer.
+// CircuitState is bound to this thread and Propagator runs synchronously,
+// so Simulator and the Swing event thread are not involved. new Project()
+// still starts a non-daemon PropagationThread; main always ends in
+// System.exit so the process cannot hang on that thread.
 //
 // CLI:
-//   java -cp logisim-evolution.jar:. SeqTester <circ> <circuit> <inputs> <outputs>
-// stdin: one row per line with input values followed by expected
-// output values; output: PASSED= / FAILED= counts plus FAIL lines.
+//   SeqTester <circ> <circuit> <in0,in1,..> <out0,out1,..>
+//   SeqTester --error-wires <circ> <circuit>
+//
+// An input named <tick> is not a pin. Its value is how many full clock
+// cycles (toggleClocks + propagate, twice) to run after the other inputs
+// are driven. Outputs may be Pins or LEDs, matched by label.
+// stdin: one row per line, whitespace-separated values, inputs then outputs.
 
-import com.cburch.logisim.file.Loader;
-import com.cburch.logisim.file.LogisimFile;
-import com.cburch.logisim.proj.Project;
 import com.cburch.logisim.circuit.Circuit;
 import com.cburch.logisim.circuit.CircuitState;
-import com.cburch.logisim.circuit.Simulator;
+import com.cburch.logisim.circuit.Propagator;
+import com.cburch.logisim.circuit.Wire;
 import com.cburch.logisim.comp.Component;
-import com.cburch.logisim.std.wiring.Pin;
-import com.cburch.logisim.instance.Instance;
+import com.cburch.logisim.data.AttributeSet;
+import com.cburch.logisim.data.BitWidth;
+import com.cburch.logisim.data.Value;
+import com.cburch.logisim.file.Loader;
+import com.cburch.logisim.file.LogisimFile;
 import com.cburch.logisim.instance.InstanceState;
 import com.cburch.logisim.instance.StdAttr;
-import com.cburch.logisim.data.Value;
-import com.cburch.logisim.data.BitWidth;
+import com.cburch.logisim.proj.Project;
+import com.cburch.logisim.std.io.Led;
+import com.cburch.logisim.std.wiring.Pin;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class SeqTester {
 
-    public static void main(String[] args) throws Exception {
+    static final String TICK = "<tick>";
+
+    static final class QuietLoader extends Loader {
+        QuietLoader() {
+            super(null);
+        }
+
+        @Override
+        public void showError(String description) {
+            System.err.println(description);
+        }
+    }
+
+    public static void main(String[] args) {
+        int code = 1;
+        try {
+            code = run(args);
+        } catch (Throwable thrown) {
+            thrown.printStackTrace(System.err);
+            code = 1;
+        } finally {
+            System.exit(code);
+        }
+    }
+
+    static int run(String[] args) throws Exception {
+        if (args.length >= 1 && "--error-wires".equals(args[0])) {
+            if (args.length < 3) {
+                System.err.println("usage: SeqTester --error-wires <circ> <circuit>");
+                return 2;
+            }
+            Loaded loaded = open(args[1], args[2]);
+            loaded.propagator.propagate();
+            int errors = 0;
+            for (Wire wire : loaded.circuit.getWires()) {
+                Value a = loaded.state.getValue(wire.getEnd(0).getLocation());
+                Value b = loaded.state.getValue(wire.getEnd(1).getLocation());
+                if ((a != null && a.isErrorValue()) || (b != null && b.isErrorValue())) {
+                    errors++;
+                }
+            }
+            System.out.println("ERROR_WIRES=" + errors);
+            return 0;
+        }
         if (args.length < 4) {
-            System.err.println("usage: SeqTester <circ> <circuit> <in0,in1,..> <out0,out1,..>");
-            System.exit(2);
+            System.err.println(
+                "usage: SeqTester <circ> <circuit> <in0,in1,..> <out0,out1,..>");
+            return 2;
         }
-        File circFile = new File(args[0]);
-        String circuitName = args[1];
-        String[] inputs = args[2].split(",");
-        String[] outputs = args[3].split(",");
-
-        Loader loader = new Loader(null);
-        LogisimFile lf = loader.openLogisimFile(circFile);
-        Project project = new Project(lf);
-        Circuit circuit = lf.getCircuit(circuitName);
-        if (circuit == null) {
-            System.err.println("circuit not found: " + circuitName);
-            System.exit(2);
+        String[] inputs = args[2].isEmpty() ? new String[0] : args[2].split(",", -1);
+        String[] outputs = args[3].isEmpty() ? new String[0] : args[3].split(",", -1);
+        Loaded loaded = open(args[0], args[1]);
+        Map<String, Component> pins = new LinkedHashMap<>();
+        Map<String, Component> readable = new LinkedHashMap<>();
+        for (Component comp : loaded.circuit.getNonWires()) {
+            String label = labelOf(comp);
+            if (label.isEmpty()) {
+                continue;
+            }
+            if (comp.getFactory() instanceof Pin) {
+                pins.put(label, comp);
+                if (!isInputPin(comp)) {
+                    readable.put(label, comp);
+                }
+            } else if (comp.getFactory() instanceof Led) {
+                readable.put(label, comp);
+            }
         }
-        project.setCurrentCircuit(circuit);
-        CircuitState state = project.getCircuitState();
-        Simulator sim = project.getSimulator();
-        sim.setAutoPropagation(true);
-        sim.reset();
-        Thread.sleep(100);
-
-        Map<String, Instance> pinByLabel = new HashMap<>();
-        for (Component comp : circuit.getNonWires()) {
-            if (!(comp.getFactory() instanceof Pin)) continue;
-            Instance inst = Instance.getInstanceFor(comp);
-            if (inst == null) continue;
-            String label = inst.getAttributeValue(StdAttr.LABEL);
-            if (label != null && !label.isEmpty()) pinByLabel.put(label, inst);
-        }
-
         for (String name : inputs) {
-            if (!pinByLabel.containsKey(name)) {
+            if (TICK.equals(name)) {
+                continue;
+            }
+            Component pin = pins.get(name);
+            if (pin == null || !isInputPin(pin)) {
                 System.err.println("input pin missing: " + name);
-                System.exit(2);
+                return 2;
             }
         }
         for (String name : outputs) {
-            if (!pinByLabel.containsKey(name)) {
-                System.err.println("output pin missing: " + name);
-                System.exit(2);
+            Component pin = pins.get(name);
+            if (pin != null && isInputPin(pin)) {
+                System.err.println("output is an input pin: " + name);
+                return 2;
+            }
+            if (!readable.containsKey(name)) {
+                System.err.println("output pin or LED missing: " + name);
+                return 2;
             }
         }
+        loaded.propagator.propagate();
 
-        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
-        int passed = 0, failed = 0, rowIdx = 0;
-        List<String> failures = new ArrayList<>();
+        int passed = 0;
+        int failed = 0;
+        int row = 0;
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
         String line;
-        while ((line = br.readLine()) != null) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
-            rowIdx++;
-            String[] tokens = trimmed.split("\\s+");
-            int expectedCols = inputs.length + outputs.length;
-            if (tokens.length != expectedCols) {
-                System.err.println("row " + rowIdx + ": got " + tokens.length
-                    + " tokens, expected " + expectedCols);
-                System.exit(2);
+        while ((line = reader.readLine()) != null) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
             }
-
+            String[] cells = line.split("\\s+");
+            int expected = inputs.length + outputs.length;
+            if (cells.length < expected) {
+                System.err.println("row " + row + " has " + cells.length + " values, want " + expected);
+                return 2;
+            }
+            try {
             for (int i = 0; i < inputs.length; i++) {
-                Instance pin = pinByLabel.get(inputs[i]);
-                BitWidth w = pin.getAttributeValue(StdAttr.WIDTH);
-                long v = parseLong(tokens[i]);
-                InstanceState ist = state.getInstanceState(pin);
-                ((Pin) pin.getFactory()).driveInputPin(
-                    ist, Value.createKnown(w, v));
+                if (TICK.equals(inputs[i])) {
+                    continue;
+                }
+                Component pin = pins.get(inputs[i]);
+                Long value = parseNumber(cells[i], widthOf(pin), false);
+                if (value == null) {
+                    System.err.println("row " + row + ": bad value: " + cells[i]);
+                    return 2;
+                }
+                drive(loaded.state, pin, value);
             }
-
-            // With auto-propagation on, the simulator picks up driveInputPin
-            // changes asynchronously. Kick it explicitly and give it time.
-            for (int k = 0; k < 10; k++) {
-                sim.step();
-                Thread.sleep(20);
-            }
-            sim.nudge();
-            Thread.sleep(200);
-
-            StringBuilder mismatch = new StringBuilder();
-            for (int i = 0; i < outputs.length; i++) {
-                Instance pin = pinByLabel.get(outputs[i]);
-                BitWidth w = pin.getAttributeValue(StdAttr.WIDTH);
-                long expected = parseLong(tokens[inputs.length + i]);
-                long mask = w.getWidth() >= 64 ? -1L : ((1L << w.getWidth()) - 1L);
-                InstanceState ist = state.getInstanceState(pin);
-                Value v = ((Pin) pin.getFactory()).getValue(ist);
-                long actual = v.toLongValue() & mask;
-                expected &= mask;
-                if (actual != expected) {
-                    mismatch.append(" ").append(outputs[i])
-                        .append("=").append(actual)
-                        .append("(exp ").append(expected).append(")");
+            loaded.propagator.propagate();
+            for (int i = 0; i < inputs.length; i++) {
+                if (!TICK.equals(inputs[i])) {
+                    continue;
+                }
+                int cycles = Integer.parseInt(cells[i]);
+                for (int n = 0; n < cycles; n++) {
+                    loaded.propagator.toggleClocks();
+                    loaded.propagator.propagate();
+                    loaded.propagator.toggleClocks();
+                    loaded.propagator.propagate();
                 }
             }
-            if (mismatch.length() == 0) {
+            boolean rowOk = true;
+            for (int i = 0; i < outputs.length; i++) {
+                Component probe = readable.get(outputs[i]);
+                String cell = cells[inputs.length + i];
+                Long want = parseNumber(cell, widthOf(probe), true);
+                if (want == null) {
+                    continue;
+                }
+                Value got = read(loaded.state, probe);
+                boolean ok = got != null && got.isFullyDefined() && got.toLongValue() == want;
+                if (!ok) {
+                    rowOk = false;
+                    System.out.println(
+                        "FAIL row " + row + " " + outputs[i]
+                            + " expected " + want + " got " + got);
+                }
+            }
+            if (rowOk) {
                 passed++;
             } else {
                 failed++;
-                failures.add("FAIL row=" + rowIdx + mismatch);
             }
+            } catch (IllegalArgumentException ex) {
+                System.err.println("row " + row + ": " + ex.getMessage());
+                return 2;
+            }
+            row++;
         }
-
         System.out.println("PASSED=" + passed);
         System.out.println("FAILED=" + failed);
-        for (String f : failures) System.out.println(f);
-        System.exit(failed == 0 ? 0 : 1);
+        return failed == 0 ? 0 : 1;
     }
 
-    private static long parseLong(String s) {
-        s = s.trim();
-        if (s.equalsIgnoreCase("x") || s.equals("-") || s.equals("<DC>")) return 0L;
-        if (s.startsWith("0x") || s.startsWith("0X")) return Long.parseLong(s.substring(2), 16);
-        if (s.startsWith("0b") || s.startsWith("0B")) return Long.parseLong(s.substring(2), 2);
-        return Long.parseLong(s);
+    /** Decimal, {@code 0x} hex, or {@code 0b} binary. Don't-care is null when allowed. */
+    static Long parseNumber(String text, int width, boolean allowDontCare) {
+        String raw = text.trim();
+        if (allowDontCare && (raw.equalsIgnoreCase("x") || raw.equals("-") || raw.equalsIgnoreCase("<DC>"))) {
+            return null;
+        }
+        int radix = 10;
+        String digits = raw;
+        if (raw.startsWith("0x") || raw.startsWith("0X")) {
+            radix = 16;
+            digits = raw.substring(2);
+        } else if (raw.startsWith("0b") || raw.startsWith("0B")) {
+            radix = 2;
+            digits = raw.substring(2);
+        }
+        if (digits.isEmpty()) {
+            throw new IllegalArgumentException("bad value: " + text);
+        }
+        long value;
+        try {
+            value = Long.parseUnsignedLong(digits, radix);
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("bad value: " + text);
+        }
+        long limit = width >= 63 ? Long.MAX_VALUE : (1L << width);
+        if (Long.compareUnsigned(value, limit) >= 0) {
+            throw new IllegalArgumentException(
+                "value " + text + " does not fit in " + width + " bits");
+        }
+        return value;
+    }
+
+    static final class Loaded {
+        final Circuit circuit;
+        final CircuitState state;
+        final Propagator propagator;
+
+        Loaded(Circuit circuit, CircuitState state, Propagator propagator) {
+            this.circuit = circuit;
+            this.state = state;
+            this.propagator = propagator;
+        }
+    }
+
+    static Loaded open(String circPath, String circuitName) throws Exception {
+        LogisimFile file = new QuietLoader().openLogisimFile(new File(circPath));
+        Project project = new Project(file);
+        Circuit circuit = file.getCircuit(circuitName);
+        if (circuit == null) {
+            throw new IllegalArgumentException("circuit not found: " + circuitName);
+        }
+        CircuitState state = CircuitState.createRootState(project, circuit, Thread.currentThread());
+        return new Loaded(circuit, state, state.getPropagator());
+    }
+
+    static String labelOf(Component comp) {
+        AttributeSet attrs = comp.getAttributeSet();
+        if (!attrs.containsAttribute(StdAttr.LABEL)) {
+            return "";
+        }
+        Object value = attrs.getValue(StdAttr.LABEL);
+        return value == null ? "" : value.toString();
+    }
+
+    static boolean isInputPin(Component comp) {
+        AttributeSet attrs = comp.getAttributeSet();
+        if (!attrs.containsAttribute(Pin.ATTR_TYPE)) {
+            return true;
+        }
+        return Pin.INPUT.equals(attrs.getValue(Pin.ATTR_TYPE));
+    }
+
+    static int widthOf(Component comp) {
+        AttributeSet attrs = comp.getAttributeSet();
+        if (!attrs.containsAttribute(StdAttr.WIDTH)) {
+            return 1;
+        }
+        Object value = attrs.getValue(StdAttr.WIDTH);
+        if (value instanceof BitWidth) {
+            return ((BitWidth) value).getWidth();
+        }
+        return 1;
+    }
+
+    static void drive(CircuitState state, Component pin, long value) {
+        InstanceState ist = state.getInstanceState(pin);
+        ((Pin) pin.getFactory()).driveInputPin(ist, Value.createKnown(BitWidth.create(widthOf(pin)), value));
+        pin.propagate(state);
+    }
+
+    static Value read(CircuitState state, Component comp) {
+        return state.getValue(comp.getEnd(0).getLocation());
     }
 }

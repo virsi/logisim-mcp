@@ -1,8 +1,7 @@
 """Constructors for fresh Logisim projects.
 
-A blank project that matches what Logisim Evolution 4.0.0 produces when you
-hit *File → New* and immediately save. Other modules use this when they
-need a starting point.
+A blank project Logisim Evolution 5.0.0 will open. The library list matches
+a file saved by the 5.0.0 GUI. Numeric ids are file-local.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from .model import Circuit, Lib, Project
 
 
 _LEADING_TEXT = (
-    "This file is intended to be loaded by Logisim-evolution v4.0.0"
+    "This file is intended to be loaded by Logisim-evolution v5.0.0"
     "(https://github.com/logisim-evolution/)."
 )
 
@@ -32,7 +31,7 @@ def empty_project(main_circuit: str = "main") -> Project:
         },
     )
     project = Project(
-        source="4.0.0",
+        source="5.0.0",
         version="1.0",
         libs=libs,
         main=main_circuit,

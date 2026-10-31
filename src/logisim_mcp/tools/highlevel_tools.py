@@ -12,9 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..circ.coords import port_location, route_l, snap
+from ..circ.coords import RouteBlocked, on_segment, port_location, route_l, snap
 from ..circ.library import (
     ComponentSpec,
+    circuit_port_points,
     gate_spec,
     input_pin_spec,
     output_pin_spec,
@@ -75,18 +76,18 @@ def _add_tunnel(
     label: str,
     loc: Point,
     facing: str = "west",
+    width: int = 1,
 ) -> Component:
-    return _place(
-        project,
-        circuit,
-        tunnel_spec(),
-        loc,
-        {"label": label, "facing": facing},
+    attrs = {"label": label, "facing": facing}
+    if width != 1:
+        attrs["width"] = str(width)
+    return _place(project, circuit, tunnel_spec(), loc, attrs)
+
+
+def _route(project: Project, circuit: Circuit, a: Point, b: Point) -> None:
+    circuit.wires.extend(
+        route_l(a, b, circuit_port_points(project, circuit), circuit.wires)
     )
-
-
-def _route(circuit: Circuit, a: Point, b: Point) -> None:
-    circuit.wires.extend(route_l(a, b))
 
 
 def _add_input_pin(
@@ -114,13 +115,13 @@ def _existing_tunnel(circuit: Circuit, label: str, loc: Point) -> bool:
     return False
 
 
-def _route_direct(circuit: Circuit, source: Point, target: Point) -> None:
+def _route_direct(project: Project, circuit: Circuit, source: Point, target: Point) -> None:
     """Plain wire (or L-pair) from ``source`` to ``target``.
 
     Use when there is no fan-out — drops the tunnel pair and avoids the
     risk of nearby target-tunnels colliding through a shared grid point.
     """
-    _route(circuit, source, target)
+    _route(project, circuit, source, target)
 
 
 def _port_at(comp: Component, spec: ComponentSpec, port_label: str) -> Point:
@@ -134,6 +135,7 @@ def _link_via_tunnel(
     label: str,
     source: Point,
     target: Point,
+    width: int = 1,
 ) -> None:
     """Route ``source`` and ``target`` to identically-labeled tunnels.
 
@@ -147,11 +149,11 @@ def _link_via_tunnel(
     src_tunnel = snap((source[0] + 30, source[1]))
     dst_tunnel = snap((target[0] - 30, target[1]))
     if not _existing_tunnel(circuit, label, src_tunnel):
-        _add_tunnel(project, circuit, label, src_tunnel, facing="west")
-        _route(circuit, source, src_tunnel)
+        _add_tunnel(project, circuit, label, src_tunnel, facing="west", width=width)
+        _route(project, circuit, source, src_tunnel)
     if not _existing_tunnel(circuit, label, dst_tunnel):
-        _add_tunnel(project, circuit, label, dst_tunnel, facing="east")
-        _route(circuit, dst_tunnel, target)
+        _add_tunnel(project, circuit, label, dst_tunnel, facing="east", width=width)
+        _route(project, circuit, dst_tunnel, target)
 
 
 def _summary(circuit: Circuit) -> dict[str, Any]:
@@ -192,8 +194,8 @@ def build_half_adder(path: str, circuit_name: str = "half_adder") -> dict[str, A
     _link_via_tunnel(project, c, "A", a_pin.loc, (270, 190))
     _link_via_tunnel(project, c, "B", b_pin.loc, (260, 130))
     _link_via_tunnel(project, c, "B", b_pin.loc, (270, 230))
-    _route(c, xor.loc, sum_pin.loc)
-    _route(c, and_.loc, cout_pin.loc)
+    _route(project, c, xor.loc, sum_pin.loc)
+    _route(project, c, and_.loc, cout_pin.loc)
 
     save(project, p)
     return {"circuit": circuit_name, **_summary(c)}
@@ -235,14 +237,14 @@ def build_full_adder(path: str, circuit_name: str = "full_adder") -> dict[str, A
     _link_via_tunnel(project, c, "X1", x1.loc, (460, 90))   # X2.in0
     _link_via_tunnel(project, c, "X1", x1.loc, (470, 200))  # A3.in0
     # Sum: X2.out -> Sum pin
-    _route(c, x2.loc, sum_pin.loc)
+    _route(project, c, x2.loc, sum_pin.loc)
     # OR_g.in0 <= A2.out, OR_g.in1 <= A3.out, OR_g.out -> Cout.
     or_spec = gate_spec("OR")
     or_in0 = (or_g.loc[0] + or_spec.input_port(0).dx, or_g.loc[1] + or_spec.input_port(0).dy)
     or_in1 = (or_g.loc[0] + or_spec.input_port(1).dx, or_g.loc[1] + or_spec.input_port(1).dy)
     _link_via_tunnel(project, c, "P1", a2.loc, or_in0)
     _link_via_tunnel(project, c, "P2", a3.loc, or_in1)
-    _route(c, or_g.loc, cout_pin.loc)
+    _route(project, c, or_g.loc, cout_pin.loc)
 
     save(project, p)
     return {"circuit": circuit_name, **_summary(c)}
@@ -278,17 +280,17 @@ def build_ripple_adder(
     sum_pin = _add_output_pin(project, c, "Sum", (500, 140), bit_width=bits)
     cout_pin = _add_output_pin(project, c, "Cout", (500, 240))
 
-    _route_direct(c, a_pin.loc, _port_at(adder, spec, "a"))
-    _route_direct(c, b_pin.loc, _port_at(adder, spec, "b"))
+    _route_direct(project, c, a_pin.loc, _port_at(adder, spec, "a"))
+    _route_direct(project, c, b_pin.loc, _port_at(adder, spec, "b"))
     # Cin pin sits above; route up the left of the adder.
-    _route(c, cin_pin.loc, (280, 60))
-    _route(c, (280, 60), (280, 120))
-    _route(c, (280, 120), _port_at(adder, spec, "cin"))
-    _route_direct(c, adder.loc, sum_pin.loc)
+    _route(project, c, cin_pin.loc, (280, 60))
+    _route(project, c, (280, 60), (280, 120))
+    _route(project, c, (280, 120), _port_at(adder, spec, "cin"))
+    _route_direct(project, c, adder.loc, sum_pin.loc)
     # Cout pin sits below; route around the right.
-    _route(c, _port_at(adder, spec, "cout"), (340, 160))
-    _route(c, (340, 160), (340, 240))
-    _route(c, (340, 240), cout_pin.loc)
+    _route(project, c, _port_at(adder, spec, "cout"), (340, 160))
+    _route(project, c, (340, 160), (340, 240))
+    _route(project, c, (340, 240), cout_pin.loc)
 
     save(project, p)
     return {"circuit": circuit_name, "bits": bits, **_summary(c)}
@@ -327,15 +329,15 @@ def build_mux(
         )
         port = spec.port_by_label(f"d{i}")
         target = (mux.loc[0] + port.dx, mux.loc[1] + port.dy)
-        _link_via_tunnel(project, c, f"D{i}", pin.loc, target)
+        _link_via_tunnel(project, c, f"D{i}", pin.loc, target, width=data_bits)
 
     sel_pin = _add_input_pin(project, c, "Sel", (320, 100 + n_data * 40), bit_width=select_bits)
     sel_port = spec.port_by_label("sel")
     sel_target = (mux.loc[0] + sel_port.dx, mux.loc[1] + sel_port.dy)
-    _link_via_tunnel(project, c, "Sel", sel_pin.loc, sel_target)
+    _link_via_tunnel(project, c, "Sel", sel_pin.loc, sel_target, width=select_bits)
 
     y_pin = _add_output_pin(project, c, "Y", (640, mux.loc[1]), bit_width=data_bits)
-    _route(c, mux.loc, y_pin.loc)
+    _route(project, c, mux.loc, y_pin.loc)
 
     save(project, p)
     return {
@@ -364,12 +366,19 @@ def build_decoder(
 
     sel_pin = _add_input_pin(project, c, "Sel", (100, 200), bit_width=select_bits)
     sel_port = spec.port_by_label("sel")
-    _link_via_tunnel(project, c, "Sel", sel_pin.loc, (dec.loc[0] + sel_port.dx, dec.loc[1] + sel_port.dy))
+    _link_via_tunnel(
+        project,
+        c,
+        "Sel",
+        sel_pin.loc,
+        (dec.loc[0] + sel_port.dx, dec.loc[1] + sel_port.dy),
+        width=select_bits,
+    )
 
     for i in range(n_out):
         port = spec.port_by_label(f"q{i}")
         target_pin = _add_output_pin(project, c, f"Q{i}", (560, dec.loc[1] + port.dy))
-        _route(c, (dec.loc[0] + port.dx, dec.loc[1] + port.dy), target_pin.loc)
+        _route(project, c, (dec.loc[0] + port.dx, dec.loc[1] + port.dy), target_pin.loc)
 
     save(project, p)
     return {"circuit": circuit_name, "select_bits": select_bits, **_summary(c)}
@@ -388,16 +397,20 @@ def build_comparator(
         raise ValueError(f"circuit {circuit_name!r} is not empty")
 
     spec = resolve("Comparator", bits=bits)
-    cmp = _place(project, c, spec, (380, 200), {"width": str(bits)})
+    # Logisim's built-in default is two's complement. A magnitude comparator
+    # compares the bit patterns as unsigned.
+    cmp = _place(
+        project, c, spec, (380, 200), {"width": str(bits), "mode": "unsigned"}
+    )
 
     a_pin = _add_input_pin(project, c, "A", (100, 180), bit_width=bits)
     b_pin = _add_input_pin(project, c, "B", (100, 220), bit_width=bits)
-    _link_via_tunnel(project, c, "A", a_pin.loc, (cmp.loc[0] - 40, cmp.loc[1] - 10))
-    _link_via_tunnel(project, c, "B", b_pin.loc, (cmp.loc[0] - 40, cmp.loc[1] + 10))
+    _link_via_tunnel(project, c, "A", a_pin.loc, (cmp.loc[0] - 40, cmp.loc[1] - 10), width=bits)
+    _link_via_tunnel(project, c, "B", b_pin.loc, (cmp.loc[0] - 40, cmp.loc[1] + 10), width=bits)
 
     for label, port_label, dy in (("Gt", "gt", -10), ("Eq", "eq", 0), ("Lt", "lt", 10)):
         pin = _add_output_pin(project, c, label, (520, cmp.loc[1] + dy))
-        _route(c, (cmp.loc[0], cmp.loc[1] + dy), pin.loc)
+        _route(project, c, (cmp.loc[0], cmp.loc[1] + dy), pin.loc)
 
     save(project, p)
     return {"circuit": circuit_name, "bits": bits, **_summary(c)}
@@ -439,13 +452,13 @@ def build_register(
     rst_pin = _add_input_pin(project, c, "Rst", (330, 280))
     q_pin = _add_output_pin(project, c, "Q", (460, 130), bit_width=bits)
 
-    _route_direct(c, d_pin.loc, d_port)
-    _route_direct(c, en_pin.loc, en_port)
-    _route_direct(c, clk_pin.loc, clk_port)
+    _route_direct(project, c, d_pin.loc, d_port)
+    _route_direct(project, c, en_pin.loc, en_port)
+    _route_direct(project, c, clk_pin.loc, clk_port)
     # Rst comes from below (the rst port is on the *bottom* edge).
-    _route(c, rst_pin.loc, (330, 230))
-    _route(c, (330, 230), rst_port)
-    _route_direct(c, q_port, q_pin.loc)
+    _route(project, c, rst_pin.loc, (330, 230))
+    _route(project, c, (330, 230), rst_port)
+    _route_direct(project, c, q_port, q_pin.loc)
 
     save(project, p)
     return {"circuit": circuit_name, "bits": bits, **_summary(c)}
@@ -489,20 +502,144 @@ def build_counter(
     q_pin = _add_output_pin(project, c, "Q", (q_port[0] + 100, q_port[1]), bit_width=bits)
     carry_pin = _add_output_pin(project, c, "Carry", (carry_port[0] + 100, carry_port[1]))
 
-    _route_direct(c, clr_pin.loc, clr_port)
-    _route_direct(c, ld_pin.loc, ld_port)
-    _route_direct(c, ud_pin.loc, ud_port)
-    _route_direct(c, en_pin.loc, en_port)
-    _route_direct(c, clk_pin.loc, clk_port)
-    _route_direct(c, d_pin.loc, d_port)
-    _route_direct(c, q_port, q_pin.loc)
-    _route_direct(c, carry_port, carry_pin.loc)
+    _route_direct(project, c, clr_pin.loc, clr_port)
+    _route_direct(project, c, ld_pin.loc, ld_port)
+    _route_direct(project, c, ud_pin.loc, ud_port)
+    _route_direct(project, c, en_pin.loc, en_port)
+    _route_direct(project, c, clk_pin.loc, clk_port)
+    _route_direct(project, c, d_pin.loc, d_port)
+    _route_direct(project, c, q_port, q_pin.loc)
+    _route_direct(project, c, carry_port, carry_pin.loc)
 
     save(project, p)
     return {"circuit": circuit_name, "bits": bits, **_summary(c)}
 
 
 # ---------- build_from_truth_table (SOP synthesis) --------------------------
+
+_OR_FANIN = 5
+
+
+def _wire_points(wire: Wire) -> list[Point]:
+    x1, y1 = wire.start
+    x2, y2 = wire.end
+    if x1 == x2:
+        step = 10 if y2 >= y1 else -10
+        return [(x1, y) for y in range(y1, y2 + step, step)]
+    if y1 == y2:
+        step = 10 if x2 >= x1 else -10
+        return [(x, y1) for x in range(x1, x2 + step, step)]
+    return [wire.start, wire.end]
+
+
+def _busy_points(project: Project, circuit: Circuit) -> set[Point]:
+    points = set(circuit_port_points(project, circuit))
+    points.update(comp.loc for comp in circuit.components)
+    for wire in circuit.wires:
+        points.update(_wire_points(wire))
+    return points
+
+
+def _tunnel_spots(near: Point) -> Iterable[Point]:
+    """Grid points around ``near``, axis-aligned neighbors first."""
+    px, py = near
+    for radius in range(1, 30):
+        ring: list[Point] = []
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) != radius:
+                    continue
+                ring.append((px + dx * 10, py + dy * 10))
+        ring.sort(
+            key=lambda point: (
+                0 if point[0] == px or point[1] == py else 1,
+                abs(point[0] - px) + abs(point[1] - py),
+            )
+        )
+        yield from ring
+
+
+def _hop(
+    project: Project,
+    circuit: Circuit,
+    label: str,
+    end: Point,
+    toward: Point,
+    facing: str,
+) -> None:
+    """Put one tunnel near ``toward`` and wire it to ``end``.
+
+    The spot is rejected when it already carries a port or wire, or when
+    the short wire would have to cross another net.
+    """
+    busy = _busy_points(project, circuit)
+    for spot in _tunnel_spots(toward):
+        if spot in busy or spot == end:
+            continue
+        if any(on_segment(spot, wire.start, wire.end) for wire in circuit.wires):
+            continue
+        tunnel = _add_tunnel(project, circuit, label, spot, facing=facing)
+        kept = len(circuit.wires)
+        try:
+            _route(project, circuit, end, spot)
+            return
+        except RouteBlocked:
+            circuit.components.remove(tunnel)
+            del circuit.wires[kept:]
+    raise RuntimeError(f"no free tunnel for {label} near {toward}")
+
+
+def _tap(project: Project, circuit: Circuit, label: str, source: Point, target: Point) -> None:
+    """Connect ``source`` to ``target`` through a uniquely placed tunnel pair.
+
+    The west-facing tunnel is the source and is created once per label, so
+    later taps are extra fan-out. Destination tunnels are searched for a
+    free coordinate, which is what keeps two nets from landing on one point.
+    """
+    has_source = any(
+        comp.name == "Tunnel"
+        and comp.attrs.get("label") == label
+        and comp.attrs.get("facing") == "west"
+        for comp in circuit.components
+    )
+    if not has_source:
+        _hop(project, circuit, label, source, (source[0] + 20, source[1]), "west")
+    _hop(project, circuit, label, target, (target[0] - 20, target[1]), "east")
+
+
+def _or_tree(
+    project: Project,
+    circuit: Circuit,
+    points: list[Point],
+    tag: str,
+    origin_x: int,
+) -> Point:
+    """Combine ``points`` with a tree of at most 5-input OR gates."""
+    layer = list(points)
+    level = 0
+    while len(layer) > 1:
+        nxt: list[Point] = []
+        groups = [layer[i : i + _OR_FANIN] for i in range(0, len(layer), _OR_FANIN)]
+        for index, group in enumerate(groups):
+            if len(group) == 1:
+                nxt.append(group[0])
+                continue
+            spec = gate_spec("OR", inputs=len(group))
+            or_loc = (origin_x + level * 220, group[len(group) // 2][1])
+            _place(project, circuit, spec, or_loc, {"inputs": str(len(group))})
+            for slot, src in enumerate(group):
+                port = spec.input_port(slot)
+                _tap(
+                    project,
+                    circuit,
+                    f"{tag}_{level}_{index}_{slot}",
+                    src,
+                    (or_loc[0] + port.dx, or_loc[1] + port.dy),
+                )
+            nxt.append(or_loc)
+        layer = nxt
+        level += 1
+    return layer[0]
 
 
 @mcp.tool()
@@ -517,11 +654,11 @@ def build_from_truth_table(
 
     ``rows`` is a list of ``[in0, in1, …, out0, out1, …]``. ``"-"`` /
     ``"x"`` in inputs means don't-care (the row covers all values of
-    that variable). Each output gets its own SOP tree.
+    that variable). Each output gets its own sum-of-products tree.
+    Every minterm is connected. An OR wider than five inputs becomes a
+    tree of 5-input gates rather than a gate that drops the extra terms.
 
-    Limitations: inputs and outputs are 1-bit. Up to 6 inputs and 4
-    outputs in practice; bigger tables become unreadable rather than
-    incorrect.
+    Inputs and outputs are 1-bit. At most 8 inputs.
     """
     if not inputs or not outputs:
         raise ValueError("inputs and outputs must be non-empty")
@@ -539,128 +676,91 @@ def build_from_truth_table(
     if c.components or c.wires:
         raise ValueError(f"circuit {circuit_name!r} is not empty")
 
-    # Lay out input pins.
-    input_pins = {
-        name: _add_input_pin(project, c, name, (100, 100 + 60 * i))
-        for i, name in enumerate(inputs)
-    }
+    def literals_of(pattern: list[str]) -> list[tuple[str, bool]]:
+        found: list[tuple[str, bool]] = []
+        for in_name, val in zip(inputs, pattern):
+            token = val.strip().lower()
+            if token in ("0", "l"):
+                found.append((in_name, True))
+            elif token in ("1", "h"):
+                found.append((in_name, False))
+        return found
 
-    out_x = 100 + 80 * (len(inputs) + 1)
-    out_y_step = 220
+    negated = {
+        name
+        for row in rows
+        for name, inverted in (
+            literals_of(row[: len(inputs)])
+        )
+        if inverted
+    }
+    pin_y = {name: 80 + 120 * index for index, name in enumerate(inputs)}
+    input_pins = {
+        name: _add_input_pin(project, c, name, (80, pin_y[name]))
+        for name in inputs
+    }
+    inverted_out: dict[str, Point] = {}
+    for name in inputs:
+        if name not in negated:
+            continue
+        not_loc = (280, pin_y[name])
+        not_gate = _place(project, c, gate_spec("NOT"), not_loc)
+        not_in = (not_loc[0] + gate_spec("NOT").input_port(0).dx, not_loc[1])
+        _route(project, c, input_pins[name].loc, not_in)
+        inverted_out[name] = not_gate.loc
+
+    def signal_source(name: str, inverted: bool) -> Point:
+        if inverted:
+            return inverted_out[name]
+        return input_pins[name].loc
+
+    def tie(value: str, y: int, label: str) -> None:
+        const = _place(project, c, resolve("Constant"), (720, y), {"value": value})
+        pin = _add_output_pin(project, c, label, (860, y))
+        _route(project, c, const.loc, pin.loc)
+
+    cursor_y = 80
     for out_idx, out_name in enumerate(outputs):
-        out_y = 100 + out_idx * out_y_step
-        minterms: list[list[str]] = []  # one literal pattern per row that asserts this output
-        for row in rows:
-            in_vals = row[: len(inputs)]
-            out_val = row[len(inputs) + out_idx]
-            if out_val.strip() in ("1", "H", "h"):
-                minterms.append(in_vals)
+        minterms = [
+            row[: len(inputs)]
+            for row in rows
+            if row[len(inputs) + out_idx].strip() in ("1", "H", "h")
+        ]
         if not minterms:
-            # Output is permanently 0. Tie it via a Constant.
-            const = _place(
-                project,
-                c,
-                resolve("Constant"),
-                (out_x - 100, out_y),
-                {"value": "0x0"},
-            )
-            out_pin = _add_output_pin(project, c, out_name, (out_x, out_y))
-            _route(c, const.loc, out_pin.loc)
+            tie("0x0", cursor_y, out_name)
+            cursor_y += 120
+            continue
+        if any(not literals_of(pattern) for pattern in minterms):
+            tie("0x1", cursor_y, out_name)
+            cursor_y += 120
             continue
 
-        # One AND per minterm; one OR over their outputs.
-        and_outputs: list[Point] = []
+        terms: list[Point] = []
         for m_idx, pattern in enumerate(minterms):
-            # Treat each non-don't-care input as a literal.
-            literals: list[tuple[str, bool]] = []  # (input_name, negated)
-            for in_name, val in zip(inputs, pattern):
-                v = val.strip().lower()
-                if v in ("0", "l"):
-                    literals.append((in_name, True))
-                elif v in ("1", "h"):
-                    literals.append((in_name, False))
-                # "x" / "-" → skip
-            if not literals:
-                # All don't-care: this row is always asserted; output = 1.
-                const = _place(
+            literals = literals_of(pattern)
+            row_y = cursor_y + m_idx * 160
+            if len(literals) == 1:
+                name, inverted = literals[0]
+                terms.append(signal_source(name, inverted))
+                continue
+            and_loc = (640, row_y)
+            spec = gate_spec("AND", inputs=len(literals))
+            _place(project, c, spec, and_loc, {"inputs": str(len(literals))})
+            for slot, (name, inverted) in enumerate(literals):
+                port = spec.input_port(slot)
+                label = f"~{name}" if inverted else name
+                _tap(
                     project,
                     c,
-                    resolve("Constant"),
-                    (out_x - 100, out_y),
-                    {"value": "0x1"},
-                )
-                out_pin = _add_output_pin(project, c, out_name, (out_x, out_y))
-                _route(c, const.loc, out_pin.loc)
-                break
-            row_y = out_y + m_idx * 60
-            # Place NOT gates for negated literals (using tunnels).
-            and_inputs: list[str] = []
-            for lit_idx, (in_name, negated) in enumerate(literals):
-                if negated:
-                    not_label = f"_n_{in_name}"
-                    if not any(
-                        comp.attrs.get("label") == not_label
-                        for comp in c.components
-                        if comp.name == "Tunnel"
-                    ):
-                        not_loc = (200, 100 + 60 * inputs.index(in_name) + 30)
-                        not_gate = _place(project, c, gate_spec("NOT"), not_loc)
-                        _link_via_tunnel(
-                            project,
-                            c,
-                            in_name,
-                            input_pins[in_name].loc,
-                            (not_loc[0] - 30, not_loc[1]),
-                        )
-                        _add_tunnel(project, c, not_label, (not_loc[0] + 30, not_loc[1]), facing="west")
-                        _route(c, not_loc, (not_loc[0] + 30, not_loc[1]))
-                    and_inputs.append(not_label)
-                else:
-                    and_inputs.append(in_name)
-            n_inputs = len(and_inputs)
-            and_x = out_x - 120
-            and_loc = (and_x, row_y)
-            and_gate = _place(project, c, gate_spec("AND", inputs=max(2, n_inputs)), and_loc, {"inputs": str(max(2, n_inputs))})
-            spec = gate_spec("AND", inputs=max(2, n_inputs))
-            for k, label_name in enumerate(and_inputs):
-                port = spec.input_port(k)
-                _link_via_tunnel(
-                    project, c, label_name,
-                    input_pins[label_name].loc if label_name in input_pins else (200, 100 + 60 * 0),
+                    label,
+                    signal_source(name, inverted),
                     (and_loc[0] + port.dx, and_loc[1] + port.dy),
                 )
-            # If AND has more declared inputs than literals, tie remaining to 1.
-            for k in range(n_inputs, max(2, n_inputs)):
-                port = spec.input_port(k)
-                const = _place(
-                    project,
-                    c,
-                    resolve("Constant"),
-                    (and_loc[0] + port.dx - 30, and_loc[1] + port.dy),
-                    {"value": "0x1"},
-                )
-                _route(c, const.loc, (and_loc[0] + port.dx, and_loc[1] + port.dy))
-            and_outputs.append(and_gate.loc)
-        else:
-            # All minterms placed; OR them together (or pass-through if one).
-            if len(and_outputs) == 1:
-                src = and_outputs[0]
-                out_pin = _add_output_pin(project, c, out_name, (out_x, out_y))
-                _link_via_tunnel(project, c, out_name + "_t", src, out_pin.loc)
-            else:
-                or_inputs = len(and_outputs)
-                or_inputs = min(or_inputs, 5)  # keep gate readable
-                or_spec = gate_spec("OR", inputs=or_inputs)
-                or_loc = (out_x - 60, out_y)
-                or_gate = _place(project, c, or_spec, or_loc, {"inputs": str(or_inputs)})
-                for k, and_out in enumerate(and_outputs[:or_inputs]):
-                    port = or_spec.input_port(k)
-                    _link_via_tunnel(
-                        project, c, f"{out_name}_m{k}", and_out,
-                        (or_loc[0] + port.dx, or_loc[1] + port.dy),
-                    )
-                out_pin = _add_output_pin(project, c, out_name, (out_x, out_y))
-                _route(c, or_loc, out_pin.loc)
+            terms.append(and_loc)
+        cursor_y += max(len(minterms), 1) * 160 + 80
+        combined = _or_tree(project, c, terms, out_name, 980)
+        out_pin = _add_output_pin(project, c, out_name, (combined[0] + 160, combined[1]))
+        _tap(project, c, f"{out_name}_out", combined, out_pin.loc)
 
     save(project, p)
     return {

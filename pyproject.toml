@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
 ]
 dependencies = [
-    "mcp[cli]>=1.6.0",
+    "mcp[cli]>=1.6.0,<2",
     "lxml>=5.2",
 ]
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from logisim_mcp.circ.coords import auto_place, route_l, snap
+import pytest
+
+from logisim_mcp.circ.coords import RouteBlocked, auto_place, route_l, snap
 from logisim_mcp.circ.library import gate_spec
+from logisim_mcp.circ.model import Wire
 
 
 def test_snap_to_grid() -> None:
@@ -28,6 +31,48 @@ def test_route_l_corner() -> None:
 
 def test_route_l_zero_length() -> None:
     assert route_l((50, 50), (50, 50)) == []
+
+
+def test_route_l_prefers_the_clear_elbow() -> None:
+    wires = route_l((100, 100), (200, 150), occupied_ports={(200, 100)})
+    assert [(w.start, w.end) for w in wires] == [
+        ((100, 100), (100, 150)),
+        ((100, 150), (200, 150)),
+    ]
+
+
+def test_route_l_doglegs_when_both_elbows_are_blocked() -> None:
+    wires = route_l(
+        (100, 100),
+        (200, 150),
+        occupied_ports={(200, 100), (100, 150)},
+    )
+    assert len(wires) == 3
+    assert wires[0].start == (100, 100)
+    assert wires[-1].end == (200, 150)
+
+
+def test_route_l_avoids_colinear_overlap() -> None:
+    blocking = [Wire(start=(150, 100), end=(250, 100))]
+    wires = route_l((100, 100), (200, 150), existing_wires=blocking)
+    assert wires[0].end == (100, 150)
+
+
+def test_route_l_refuses_a_fully_blocked_path() -> None:
+    wires = []
+    for step in range(1, 31):
+        for channel in (step * 10, -step * 10):
+            wires.append(Wire(start=(channel, 0), end=(channel, 100)))
+            wires.append(Wire(start=(0, channel), end=(100, channel)))
+    with pytest.raises(RouteBlocked):
+        route_l((0, 0), (100, 100), occupied_ports={(100, 0), (0, 100)}, existing_wires=wires)
+
+
+def test_auto_place_avoids_existing_wires() -> None:
+    spec = gate_spec("AND")
+    first = auto_place([], spec)
+    blocked = auto_place([], spec, wires=[Wire(start=(100, 60), end=(100, 100))])
+    assert blocked != first
 
 
 def test_auto_place_finds_distinct_slots() -> None:

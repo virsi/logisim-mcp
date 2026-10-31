@@ -33,6 +33,7 @@ def test_add_input_and_output_pin(fresh: Path) -> None:
     assert pins[0].attrs["label"] == "A"
     assert pins[1].attrs["label"] == "Sum"
     assert pins[1].attrs["output"] == "true"
+    assert pins[1].attrs["type"] == "output"
     assert a["loc"] == (100, 100)
     assert s["loc"] == (300, 100)
 
