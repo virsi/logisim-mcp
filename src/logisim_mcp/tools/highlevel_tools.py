@@ -614,6 +614,7 @@ def _or_tree(
     tag: str,
     origin_x: int,
     origin_y: int,
+    label_prefix: str,
 ) -> tuple[Point, Point]:
     """Combine ``points`` with a tree of at most 5-input OR gates.
 
@@ -639,7 +640,7 @@ def _or_tree(
                 _tap(
                     project,
                     circuit,
-                    f"{tag}_{level}_{index}_{slot}",
+                    f"{label_prefix}or_{tag}_{level}_{index}_{slot}",
                     src,
                     (or_loc[0] + port.dx, or_loc[1] + port.dy),
                 )
@@ -683,6 +684,16 @@ def build_from_truth_table(
     c = _ensure_circuit(project, circuit_name)
     if c.components or c.wires:
         raise ValueError(f"circuit {circuit_name!r} is not empty")
+
+    reserved = set(inputs) | set(outputs)
+    reserved.update(
+        comp.attrs.get("label", "")
+        for comp in c.components
+        if comp.attrs.get("label")
+    )
+    label_prefix = "__logisim_mcp_"
+    while any(label.startswith(label_prefix) for label in reserved):
+        label_prefix += "_"
 
     def literals_of(pattern: list[str]) -> list[tuple[str, bool]]:
         found: list[tuple[str, bool]] = []
@@ -757,18 +768,26 @@ def build_from_truth_table(
             _place(project, c, spec, and_loc, {"inputs": str(len(literals))})
             for slot, (name, inverted) in enumerate(literals):
                 port = spec.input_port(slot)
-                label = f"~{name}" if inverted else name
+                label = f"not_{name}" if inverted else f"in_{name}"
                 _tap(
                     project,
                     c,
-                    label,
+                    f"{label_prefix}{label}",
                     signal_source(name, inverted),
                     (and_loc[0] + port.dx, and_loc[1] + port.dy),
                 )
             terms.append(and_loc)
-        combined, out_loc = _or_tree(project, c, terms, out_name, 980, block_top)
+        combined, out_loc = _or_tree(
+            project, c, terms, str(out_idx), 980, block_top, label_prefix
+        )
         out_pin = _add_output_pin(project, c, out_name, out_loc)
-        _tap(project, c, f"{out_name}_out", combined, out_pin.loc)
+        _tap(
+            project,
+            c,
+            f"{label_prefix}out_{out_idx}",
+            combined,
+            out_pin.loc,
+        )
         cursor_y += max(len(minterms), 1) * 160 + 80
 
     save(project, p)

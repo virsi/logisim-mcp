@@ -3,7 +3,8 @@ import os
 import pytest
 
 from logisim_mcp.config import JavaTooOld, _resolve_java, parse_java_major, resolve_javac
-from logisim_mcp.runner.java import apply_windows_prefs
+from logisim_mcp.runner import java as java_runner
+from logisim_mcp.runner.java import JavaResult, apply_windows_prefs, prefs_classes
 
 
 def test_parse_java_major_treats_1_8_as_8() -> None:
@@ -104,3 +105,33 @@ def test_windows_prefs_launch_is_not_jar_mode() -> None:
     assert "logisim.jar" in cmd[3]
     assert cmd[4] == "com.cburch.logisim.Main"
     assert cmd[5:] == ["--no-splash", "--locale", "en"]
+
+
+def test_preferences_factory_is_packaged_precompiled() -> None:
+    classes = prefs_classes()
+    for name in ("MemPreferencesFactory.class", "MemPreferencesFactory$MemNode.class"):
+        data = (classes / name).read_bytes()
+        assert data[:4] == b"\xca\xfe\xba\xbe"
+
+
+def test_windows_run_java_does_not_need_javac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args, **_kwargs):
+        raise AssertionError("ordinary Java calls must not compile helpers")
+
+    monkeypatch.setattr(java_runner.sys, "platform", "win32")
+    monkeypatch.setattr(java_runner, "_ensure_jar", lambda: None)
+    monkeypatch.setattr(java_runner, "_reject_diagonal_circs", lambda _args: None)
+    monkeypatch.setattr(java_runner, "helper_classes", fail)
+    monkeypatch.setattr(java_runner, "resolve_javac", fail)
+    monkeypatch.setattr(
+        java_runner,
+        "_invoke",
+        lambda cmd, timeout=None, stdin=None: JavaResult(cmd, 0, "", ""),
+    )
+
+    result = java_runner.run_java(["circuit.circ"])
+
+    assert result.args[1] == "-Djava.util.prefs.PreferencesFactory=MemPreferencesFactory"
+    assert str(prefs_classes()) in result.args[3]

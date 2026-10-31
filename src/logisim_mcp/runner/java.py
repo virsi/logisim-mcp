@@ -112,28 +112,48 @@ def _invoke(
 
 
 _COMPILE_LOCK = threading.Lock()
-# Top-level helpers plus nested classes javac emits for them. Omitting the
-# nested files leaves a cache that loads SeqTester / MemPreferencesFactory
-# then fails with NoClassDefFoundError (or falls back to WindowsPreferences).
+# The in-memory preferences factory is shipped precompiled so ordinary
+# Windows CLI calls work on a JRE, which has no javac. Regenerate it with:
+#   javac --release 21 -d src/logisim_mcp/runner/classes \
+#       src/logisim_mcp/runner/MemPreferencesFactory.java
+_PREFS_CLASS_NAMES = (
+    "MemPreferencesFactory.class",
+    "MemPreferencesFactory$MemNode.class",
+)
+_PREFS_CLASSES_DIR = Path(__file__).resolve().parent / "classes"
+
+# Top-level SeqTester plus nested classes javac emits for it. Omitting the
+# nested files leaves a cache that loads SeqTester then fails with
+# NoClassDefFoundError.
 _HELPER_CLASS_NAMES = (
     "SeqTester.class",
     "SeqTester$QuietLoader.class",
     "SeqTester$Loaded.class",
-    "MemPreferencesFactory.class",
-    "MemPreferencesFactory$MemNode.class",
 )
 
 
-def helper_classes() -> Path:
-    """Compile SeqTester and the in-memory preferences factory once.
+def prefs_classes() -> Path:
+    """Directory with the precompiled in-memory preferences factory."""
+    missing = [
+        name for name in _PREFS_CLASS_NAMES if not (_PREFS_CLASSES_DIR / name).is_file()
+    ]
+    if missing:
+        raise RuntimeError(
+            "packaged preferences factory is incomplete: " + ", ".join(missing)
+        )
+    return _PREFS_CLASSES_DIR
 
-    All emitted ``.class`` files are the cache marker. A temp directory
-    receives the compile so a failed or concurrent ``javac`` cannot leave a
-    fresh ``SeqTester.class`` beside a missing factory or nested class.
+
+def helper_classes() -> Path:
+    """Compile SeqTester once; sequential simulation still needs a JDK.
+
+    A temp directory receives the compile so a failed or concurrent
+    ``javac`` cannot leave a fresh ``SeqTester.class`` beside a missing
+    nested class.
     """
     with _COMPILE_LOCK:
         src_dir = Path(__file__).resolve().parent
-        sources = [src_dir / "SeqTester.java", src_dir / "MemPreferencesFactory.java"]
+        sources = [src_dir / "SeqTester.java"]
         cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
         out = cache_root / "logisim-mcp" / "classes"
         out.mkdir(parents=True, exist_ok=True)
@@ -181,7 +201,7 @@ def run_java(extra_args: list[str], timeout: int | None = None) -> JavaResult:
     _reject_diagonal_circs(extra_args)
     cmd = SETTINGS.java_cmd(*extra_args)
     if sys.platform == "win32":
-        cmd = apply_windows_prefs(cmd, str(helper_classes()))
+        cmd = apply_windows_prefs(cmd, str(prefs_classes()))
     return _invoke(cmd, timeout=timeout)
 
 
@@ -195,12 +215,14 @@ def run_seq_tester(
     _reject_diagonal_circs(args)
     classes = helper_classes()
     cmd = [SETTINGS.java_binary]
+    classpath = [str(classes), str(SETTINGS.logisim_jar)]
     if sys.platform == "win32":
         cmd.append("-Djava.util.prefs.PreferencesFactory=MemPreferencesFactory")
+        classpath.insert(0, str(prefs_classes()))
     cmd.extend(
         [
             "-cp",
-            os.pathsep.join([str(classes), str(SETTINGS.logisim_jar)]),
+            os.pathsep.join(classpath),
             "SeqTester",
             *args,
         ]

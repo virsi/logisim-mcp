@@ -244,6 +244,53 @@ def test_truth_table_outputs_get_separate_gates_and_pins(fresh: Path) -> None:
     assert len(locations) == len(set(locations))
 
 
+def test_truth_table_internal_tunnel_labels_are_namespaced(fresh: Path) -> None:
+    from logisim_mcp.circ.parser import parse
+
+    build_from_truth_table(
+        str(fresh),
+        inputs=["Y_out", "B"],
+        outputs=["Y"],
+        rows=[
+            ["0", "0", "0"],
+            ["0", "1", "0"],
+            ["1", "0", "0"],
+            ["1", "1", "1"],
+        ],
+    )
+    circuit = parse(fresh).require_circuit("synthesized")
+    tunnel_labels = {
+        comp.attrs.get("label", "")
+        for comp in circuit.components
+        if comp.name == "Tunnel"
+    }
+    assert tunnel_labels
+    assert "Y_out" not in tunnel_labels
+    assert all(label.startswith("__logisim_mcp_") for label in tunnel_labels)
+
+
+@requires_logisim
+def test_truth_table_input_named_like_an_internal_net(fresh: Path) -> None:
+    rows = [
+        ["0", "0", "0"],
+        ["0", "1", "0"],
+        ["1", "0", "0"],
+        ["1", "1", "1"],
+    ]
+    build_from_truth_table(
+        str(fresh),
+        inputs=["Y_out", "B"],
+        outputs=["Y"],
+        rows=rows,
+    )
+    report = check_circuit_drc(str(fresh), circuit="synthesized", probe_errors=True)
+    assert report["shorted_nets"] == []
+    sim = simulate_sequential(
+        str(fresh), "synthesized", ["Y_out", "B"], ["Y"], rows
+    )
+    assert sim["ok"], sim
+
+
 @requires_logisim
 def test_truth_table_multiple_outputs_simulate_independently(fresh: Path) -> None:
     build_from_truth_table(
