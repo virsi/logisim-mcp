@@ -112,15 +112,24 @@ def _invoke(
 
 
 _COMPILE_LOCK = threading.Lock()
-_HELPER_CLASS_NAMES = ("SeqTester.class", "MemPreferencesFactory.class")
+# Top-level helpers plus nested classes javac emits for them. Omitting the
+# nested files leaves a cache that loads SeqTester / MemPreferencesFactory
+# then fails with NoClassDefFoundError (or falls back to WindowsPreferences).
+_HELPER_CLASS_NAMES = (
+    "SeqTester.class",
+    "SeqTester$QuietLoader.class",
+    "SeqTester$Loaded.class",
+    "MemPreferencesFactory.class",
+    "MemPreferencesFactory$MemNode.class",
+)
 
 
 def helper_classes() -> Path:
     """Compile SeqTester and the in-memory preferences factory once.
 
-    Both class files are the cache marker. A temp directory receives the
-    compile so a failed or concurrent ``javac`` cannot leave a fresh
-    ``SeqTester.class`` beside a missing factory.
+    All emitted ``.class`` files are the cache marker. A temp directory
+    receives the compile so a failed or concurrent ``javac`` cannot leave a
+    fresh ``SeqTester.class`` beside a missing factory or nested class.
     """
     with _COMPILE_LOCK:
         src_dir = Path(__file__).resolve().parent
@@ -154,10 +163,13 @@ def helper_classes() -> Path:
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr or proc.stdout or "javac failed")
             for name in _HELPER_CLASS_NAMES:
-                produced = stage / name
-                if not produced.is_file():
+                if not (stage / name).is_file():
                     raise RuntimeError(f"javac did not write {name}")
-                os.replace(produced, out / name)
+            for produced in stage.glob("*.class"):
+                dest = out / produced.name
+                if dest.exists():
+                    dest.unlink()
+                os.replace(produced, dest)
         finally:
             shutil.rmtree(stage, ignore_errors=True)
         return out

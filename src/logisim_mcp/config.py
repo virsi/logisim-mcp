@@ -79,6 +79,8 @@ def _java_candidates() -> list[str]:
     add(shutil.which("java"))
     java_home = os.environ.get("JAVA_HOME")
     if java_home:
+        exe = ".exe" if os.name == "nt" else ""
+        add(str(Path(java_home) / "bin" / f"java{exe}"))
         add(str(Path(java_home) / "bin" / "java"))
 
     home = Path.home()
@@ -135,6 +137,11 @@ def _resolve_java() -> str:
     )
 
 
+def _javac_names() -> list[str]:
+    """Windows JDK layout uses ``javac.exe`` even when ``java`` lacks ``.exe``."""
+    return ["javac.exe", "javac"] if os.name == "nt" else ["javac"]
+
+
 def resolve_javac(java_binary: str) -> str:
     """``javac`` beside ``java``, then ``JAVA_HOME``, then ``PATH``.
 
@@ -143,18 +150,23 @@ def resolve_javac(java_binary: str) -> str:
     ``FileNotFoundError`` from a bare ``javac`` command.
     """
     java_path = Path(java_binary)
-    name = "javac.exe" if java_path.name.lower().endswith(".exe") else "javac"
-    sibling = java_path.with_name(name)
-    if sibling.is_file():
-        return str(sibling)
+    # JAVA_HOME candidates may be recorded as ``…/bin/java`` without ``.exe``
+    # on Windows; still prefer ``javac.exe`` beside that binary over PATH.
+    names = _javac_names()
+    for name in names:
+        sibling = java_path.with_name(name)
+        if sibling.is_file():
+            return str(sibling)
     java_home = os.environ.get("JAVA_HOME")
     if java_home:
-        candidate = Path(java_home) / "bin" / name
-        if candidate.is_file():
-            return str(candidate)
-    found = shutil.which(name)
-    if found:
-        return found
+        for name in names:
+            candidate = Path(java_home) / "bin" / name
+            if candidate.is_file():
+                return str(candidate)
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
     raise RuntimeError(
         "javac was not found next to the Java 21 binary or on PATH. "
         "Sequential simulation needs a JDK, not a JRE-only install."

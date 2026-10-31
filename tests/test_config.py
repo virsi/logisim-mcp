@@ -28,6 +28,23 @@ def test_javac_is_taken_from_the_java_directory(tmp_path) -> None:
     assert resolve_javac(str(java)) == str(javac)
 
 
+def test_windows_javac_exe_beside_java_without_exe(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JAVA_HOME candidates may omit ``.exe``; still pick ``javac.exe``."""
+    java = tmp_path / "java"
+    javac = tmp_path / "javac.exe"
+    java.write_text("x", encoding="utf-8")
+    javac.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        "logisim_mcp.config._javac_names",
+        lambda: ["javac.exe", "javac"],
+    )
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setattr("logisim_mcp.config.shutil.which", lambda _name: None)
+    assert resolve_javac(str(java)) == str(javac)
+
+
 def test_missing_javac_names_the_jdk(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     java = tmp_path / "java"
     java.write_text("x", encoding="utf-8")
