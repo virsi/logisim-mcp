@@ -228,10 +228,12 @@ public class SeqTester {
         } catch (NumberFormatException ex) {
             throw new IllegalArgumentException("bad value: " + text);
         }
-        long limit = width >= 63 ? Long.MAX_VALUE : (1L << width);
-        if (Long.compareUnsigned(value, limit) >= 0) {
-            throw new IllegalArgumentException(
-                "value " + text + " does not fit in " + width + " bits");
+        if (width < 64) {
+            long limit = 1L << width;
+            if (Long.compareUnsigned(value, limit) >= 0) {
+                throw new IllegalArgumentException(
+                    "value " + text + " does not fit in " + width + " bits");
+            }
         }
         return value;
     }

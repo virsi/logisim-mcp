@@ -147,9 +147,17 @@ def resolve_javac(java_binary: str) -> str:
 
     A JRE-only install has ``java`` and not ``javac``. The helper classes
     cannot be compiled there, so the error names that instead of raising
-    ``FileNotFoundError`` from a bare ``javac`` command.
+    ``FileNotFoundError`` from a bare ``javac`` command. The selected Java
+    binary is looked up on PATH and its symlinks resolved first, so a
+    ``/usr/bin/java`` pointing at JDK 21 uses that JDK's compiler instead
+    of an older ``/usr/bin/javac``.
     """
-    java_path = Path(java_binary)
+    located = shutil.which(java_binary) or java_binary
+    java_path = Path(located).expanduser()
+    try:
+        java_path = java_path.resolve()
+    except OSError:
+        pass
     # JAVA_HOME candidates may be recorded as ``…/bin/java`` without ``.exe``
     # on Windows; still prefer ``javac.exe`` beside that binary over PATH.
     names = _javac_names()

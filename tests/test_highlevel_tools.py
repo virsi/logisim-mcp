@@ -225,6 +225,50 @@ def test_truth_table_keeps_every_minterm(fresh: Path) -> None:
     assert nand_sim["ok"], nand_sim
 
 
+def test_truth_table_outputs_get_separate_gates_and_pins(fresh: Path) -> None:
+    """Single-literal terms must not collapse two outputs onto one OR/pin."""
+    from logisim_mcp.circ.parser import parse
+
+    build_from_truth_table(
+        str(fresh),
+        inputs=["A", "B"],
+        outputs=["Y", "Z"],
+        rows=[
+            ["1", "0", "1", "0"],
+            ["0", "0", "0", "1"],
+            ["-", "1", "1", "1"],
+        ],
+    )
+    circuit = parse(fresh).require_circuit("synthesized")
+    locations = [comp.loc for comp in circuit.components]
+    assert len(locations) == len(set(locations))
+
+
+@requires_logisim
+def test_truth_table_multiple_outputs_simulate_independently(fresh: Path) -> None:
+    build_from_truth_table(
+        str(fresh),
+        inputs=["A", "B"],
+        outputs=["Y", "Z"],
+        rows=[
+            ["1", "0", "1", "0"],
+            ["0", "0", "0", "1"],
+            ["-", "1", "1", "1"],
+        ],
+    )
+    report = check_circuit_drc(str(fresh), circuit="synthesized", probe_errors=True)
+    assert report["shorted_nets"] == []
+    assert report["error_wires"] == 0
+    rows = [
+        ["0", "0", "0", "1"],
+        ["0", "1", "1", "1"],
+        ["1", "0", "1", "0"],
+        ["1", "1", "1", "1"],
+    ]
+    sim = simulate_sequential(str(fresh), "synthesized", ["A", "B"], ["Y", "Z"], rows)
+    assert sim["ok"], sim
+
+
 @requires_logisim
 def test_register_sequential_vector(fresh: Path) -> None:
     """A rising edge on Clk captures D. ``<set>``/``<seq>`` keep state."""

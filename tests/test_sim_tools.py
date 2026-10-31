@@ -189,6 +189,32 @@ def test_sequential_accepts_hex_and_rejects_a_bad_output(tmp_path: Path) -> None
 
 
 @requires_logisim
+def test_sequential_accepts_full_width_unsigned_values(tmp_path: Path) -> None:
+    cases = [
+        (63, ["0x7fffffffffffffff"]),
+        (64, ["0x7fffffffffffffff", "0x8000000000000000", "0xffffffffffffffff"]),
+    ]
+    for width, values in cases:
+        path = tmp_path / f"wide{width}.circ"
+        create_circuit_file(str(path))
+        src = add_pin(
+            str(path), "main", "A", is_output=False, bit_width=width, x=100, y=100
+        )
+        dst = add_pin(
+            str(path), "main", "Y", is_output=True, bit_width=width, x=300, y=100
+        )
+        connect(str(path), "main", src["id"], "tip", dst["id"], "tip")
+        result = simulate_sequential(
+            str(path),
+            "main",
+            inputs=["A"],
+            outputs=["Y"],
+            rows=[[value, value] for value in values],
+        )
+        assert result["ok"], result
+
+
+@requires_logisim
 def test_verify_does_not_pass_when_nothing_ran(tmp_path: Path) -> None:
     path = tmp_path / "empty.circ"
     create_circuit_file(str(path))

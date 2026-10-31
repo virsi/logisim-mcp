@@ -65,12 +65,30 @@ def overlaps_colinear(a: Point, b: Point, c: Point, d: Point) -> bool:
     return False
 
 
+def _wire_contact(start: Point, end: Point, wire: Wire) -> bool:
+    """True when a new segment touches an existing wire at any point.
+
+    Logisim connects wires that share an endpoint, and also a wire endpoint
+    that lands on another wire. Crossing two wires in their interiors stays
+    unconnected, so that remains allowed.
+    """
+    if overlaps_colinear(start, end, wire.start, wire.end):
+        return True
+    return (
+        on_segment(wire.start, start, end)
+        or on_segment(wire.end, start, end)
+        or on_segment(start, wire.start, wire.end)
+        or on_segment(end, wire.start, wire.end)
+    )
+
+
 def _segment_blocked(
     start: Point,
     end: Point,
     occupied: set[Point],
     wires: list[Wire],
     allow: set[Point],
+    intended: list[Wire],
 ) -> bool:
     if start == end:
         return False
@@ -80,7 +98,9 @@ def _segment_blocked(
         if point == start or point == end or on_segment(point, start, end, interior=True):
             return True
     for wire in wires:
-        if overlaps_colinear(start, end, wire.start, wire.end):
+        if any(wire is same for same in intended):
+            continue
+        if _wire_contact(start, end, wire):
             return True
     return False
 
@@ -107,6 +127,7 @@ def _dogleg(
     b: Point,
     occupied: set[Point],
     wires: list[Wire],
+    intended: list[Wire],
 ) -> list[Wire] | None:
     allow = {a, b}
     ax, ay = a
@@ -118,7 +139,10 @@ def _dogleg(
             p1 = (channel, ay)
             p2 = (channel, by)
             segments = [(a, p1), (p1, p2), (p2, b)]
-            if not any(_segment_blocked(s, e, occupied, wires, allow) for s, e in segments):
+            if not any(
+                _segment_blocked(s, e, occupied, wires, allow, intended)
+                for s, e in segments
+            ):
                 return _emit(segments)
         for channel in (ay + step * GRID, ay - step * GRID):
             if channel == by:
@@ -126,7 +150,10 @@ def _dogleg(
             p1 = (ax, channel)
             p2 = (bx, channel)
             segments = [(a, p1), (p1, p2), (p2, b)]
-            if not any(_segment_blocked(s, e, occupied, wires, allow) for s, e in segments):
+            if not any(
+                _segment_blocked(s, e, occupied, wires, allow, intended)
+                for s, e in segments
+            ):
                 return _emit(segments)
     return None
 
@@ -142,10 +169,12 @@ def route_l(
     With no obstacles this is horizontal-first, matching the historical
     L router. Otherwise it tries that L, then vertical-first, then a
     3-segment dogleg on a free grid channel. A segment is blocked when
-    it touches an occupied port other than ``a`` and ``b``, or when it
-    overlaps an existing wire along more than a point. If every
-    candidate is blocked, this raises :class:`RouteBlocked` instead of
-    drawing the short it was asked to avoid.
+    it touches an occupied port other than ``a`` and ``b``, when it
+    lands on or crosses a wire endpoint on another net, or when it
+    overlaps an existing wire along more than a point. Wires connected
+    to ``a`` or ``b`` are the net being extended, so they may be reused.
+    If every candidate is blocked, this raises :class:`RouteBlocked`
+    instead of drawing the short it was asked to avoid.
     """
     a = snap(a)
     b = snap(b)
@@ -153,14 +182,25 @@ def route_l(
         return []
     occupied = set(occupied_ports or ())
     wires = list(existing_wires or ())
+    # Wires touched by either endpoint belong to the net being extended, so
+    # overlapping or joining them cannot short two different signals.
+    intended = [
+        wire
+        for wire in wires
+        if on_segment(a, wire.start, wire.end)
+        or on_segment(b, wire.start, wire.end)
+    ]
     options = _candidates(a, b)
     if not occupied and not wires:
         return _emit(options[0])
     allow = {a, b}
     for segments in options:
-        if not any(_segment_blocked(s, e, occupied, wires, allow) for s, e in segments):
+        if not any(
+            _segment_blocked(s, e, occupied, wires, allow, intended)
+            for s, e in segments
+        ):
             return _emit(segments)
-    dogleg = _dogleg(a, b, occupied, wires)
+    dogleg = _dogleg(a, b, occupied, wires, intended)
     if dogleg is not None:
         return dogleg
     raise RouteBlocked(f"no free path from {a} to {b}")

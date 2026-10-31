@@ -613,8 +613,15 @@ def _or_tree(
     points: list[Point],
     tag: str,
     origin_x: int,
-) -> Point:
-    """Combine ``points`` with a tree of at most 5-input OR gates."""
+    origin_y: int,
+) -> tuple[Point, Point]:
+    """Combine ``points`` with a tree of at most 5-input OR gates.
+
+    Returns the final signal point and a dedicated output-pin location.
+    Each output owns a distinct ``origin_y`` band, and gates within a band
+    are stacked by group so separate truth-table outputs never share a
+    gate or pin even when a term is just an input pin.
+    """
     layer = list(points)
     level = 0
     while len(layer) > 1:
@@ -625,7 +632,7 @@ def _or_tree(
                 nxt.append(group[0])
                 continue
             spec = gate_spec("OR", inputs=len(group))
-            or_loc = (origin_x + level * 220, group[len(group) // 2][1])
+            or_loc = (origin_x + level * 220, origin_y + index * 80)
             _place(project, circuit, spec, or_loc, {"inputs": str(len(group))})
             for slot, src in enumerate(group):
                 port = spec.input_port(slot)
@@ -639,7 +646,8 @@ def _or_tree(
             nxt.append(or_loc)
         layer = nxt
         level += 1
-    return layer[0]
+    pin_loc = (origin_x + level * 220 + 160, origin_y)
+    return layer[0], pin_loc
 
 
 @mcp.tool()
@@ -721,6 +729,7 @@ def build_from_truth_table(
 
     cursor_y = 80
     for out_idx, out_name in enumerate(outputs):
+        block_top = cursor_y
         minterms = [
             row[: len(inputs)]
             for row in rows
@@ -738,7 +747,7 @@ def build_from_truth_table(
         terms: list[Point] = []
         for m_idx, pattern in enumerate(minterms):
             literals = literals_of(pattern)
-            row_y = cursor_y + m_idx * 160
+            row_y = block_top + m_idx * 160
             if len(literals) == 1:
                 name, inverted = literals[0]
                 terms.append(signal_source(name, inverted))
@@ -757,10 +766,10 @@ def build_from_truth_table(
                     (and_loc[0] + port.dx, and_loc[1] + port.dy),
                 )
             terms.append(and_loc)
-        cursor_y += max(len(minterms), 1) * 160 + 80
-        combined = _or_tree(project, c, terms, out_name, 980)
-        out_pin = _add_output_pin(project, c, out_name, (combined[0] + 160, combined[1]))
+        combined, out_loc = _or_tree(project, c, terms, out_name, 980, block_top)
+        out_pin = _add_output_pin(project, c, out_name, out_loc)
         _tap(project, c, f"{out_name}_out", combined, out_pin.loc)
+        cursor_y += max(len(minterms), 1) * 160 + 80
 
     save(project, p)
     return {

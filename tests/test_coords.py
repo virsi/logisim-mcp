@@ -58,6 +58,31 @@ def test_route_l_avoids_colinear_overlap() -> None:
     assert wires[0].end == (100, 150)
 
 
+def test_route_l_reuses_the_source_branch_without_shorting_a_foreign_corner() -> None:
+    existing = [
+        # Source branch on the net being extended.
+        Wire(start=(100, 100), end=(150, 100)),
+        # A different net turning at (100, 150).
+        Wire(start=(100, 150), end=(50, 150)),
+        Wire(start=(100, 150), end=(100, 180)),
+    ]
+    wires = route_l((100, 100), (200, 150), existing_wires=existing)
+    assert [(w.start, w.end) for w in wires] == [
+        ((100, 100), (200, 100)),
+        ((200, 100), (200, 150)),
+    ]
+
+
+def test_route_l_allows_a_target_branch_on_the_intended_net() -> None:
+    existing = [Wire(start=(200, 150), end=(160, 150))]
+    wires = route_l((100, 100), (200, 150), existing_wires=existing)
+    assert wires[-1].end == (200, 150)
+    assert [(w.start, w.end) for w in wires] == [
+        ((100, 100), (200, 100)),
+        ((200, 100), (200, 150)),
+    ]
+
+
 def test_route_l_refuses_a_fully_blocked_path() -> None:
     wires = []
     for step in range(1, 31):
