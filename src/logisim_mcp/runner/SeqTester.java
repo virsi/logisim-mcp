@@ -10,15 +10,17 @@
 //   SeqTester --error-wires <circ> <circuit>
 //
 // An input named <tick> is not a pin. Its value is how many full clock
-// cycles (toggleClocks + propagate, twice) to run after the other inputs
-// are driven. Outputs may be Pins or LEDs, matched by label.
+// periods (one complete high/low cycle of every Clock) to run after the
+// other inputs are driven. Outputs may be Pins or LEDs, matched by label.
 // stdin: one row per line, whitespace-separated values, inputs then outputs.
 
 import com.cburch.logisim.circuit.Circuit;
 import com.cburch.logisim.circuit.CircuitState;
 import com.cburch.logisim.circuit.Propagator;
+import com.cburch.logisim.circuit.SubcircuitFactory;
 import com.cburch.logisim.circuit.Wire;
 import com.cburch.logisim.comp.Component;
+import com.cburch.logisim.data.Attribute;
 import com.cburch.logisim.data.AttributeSet;
 import com.cburch.logisim.data.BitWidth;
 import com.cburch.logisim.data.Value;
@@ -28,13 +30,16 @@ import com.cburch.logisim.instance.InstanceState;
 import com.cburch.logisim.instance.StdAttr;
 import com.cburch.logisim.proj.Project;
 import com.cburch.logisim.std.io.Led;
+import com.cburch.logisim.std.wiring.Clock;
 import com.cburch.logisim.std.wiring.Pin;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 public class SeqTester {
 
@@ -128,6 +133,7 @@ public class SeqTester {
             }
         }
         loaded.propagator.propagate();
+        int ticksPerCycle = clockTicksPerCycle(loaded.circuit);
 
         int passed = 0;
         int failed = 0;
@@ -165,10 +171,10 @@ public class SeqTester {
                 }
                 int cycles = Integer.parseInt(cells[i]);
                 for (int n = 0; n < cycles; n++) {
-                    loaded.propagator.toggleClocks();
-                    loaded.propagator.propagate();
-                    loaded.propagator.toggleClocks();
-                    loaded.propagator.propagate();
+                    for (int step = 0; step < ticksPerCycle; step++) {
+                        loaded.propagator.toggleClocks();
+                        loaded.propagator.propagate();
+                    }
                 }
             }
             boolean rowOk = true;
@@ -202,6 +208,70 @@ public class SeqTester {
         System.out.println("PASSED=" + passed);
         System.out.println("FAILED=" + failed);
         return failed == 0 ? 0 : 1;
+    }
+
+    /**
+     * Half-clock ticks in one full period shared by every Clock in the
+     * circuit. Logisim's default is 1 high + 1 low, but both durations are
+     * configurable, so a fixed two toggles is not a full cycle.
+     */
+    static int clockTicksPerCycle(Circuit circuit) {
+        long ticks = clockTicksFor(circuit, new HashSet<>());
+        return ticks == 0 ? 2 : (int) ticks;
+    }
+
+    static long clockTicksFor(Circuit circuit, Set<Circuit> seen) {
+        if (!seen.add(circuit)) {
+            return 0;
+        }
+        long ticks = 0;
+        for (Component comp : circuit.getClocks()) {
+            AttributeSet attrs = comp.getAttributeSet();
+            int high = clockDuration(attrs, Clock.ATTR_HIGH);
+            int low = clockDuration(attrs, Clock.ATTR_LOW);
+            ticks = combinePeriods(ticks, (long) high + low);
+        }
+        for (Component comp : circuit.getNonWires()) {
+            if (comp.getFactory() instanceof SubcircuitFactory) {
+                Circuit sub = ((SubcircuitFactory) comp.getFactory()).getSubcircuit();
+                ticks = combinePeriods(ticks, clockTicksFor(sub, seen));
+            }
+        }
+        return ticks;
+    }
+
+    static long combinePeriods(long current, long period) {
+        if (period == 0) {
+            return current;
+        }
+        long combined = current == 0 ? period : lcm(current, period);
+        if (combined > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                "clock periods are too large to combine");
+        }
+        return combined;
+    }
+
+    static int clockDuration(AttributeSet attrs, Attribute<Integer> attr) {
+        Object value = attrs.getValue(attr);
+        if (value instanceof Number) {
+            int duration = ((Number) value).intValue();
+            if (duration >= 1) {
+                return duration;
+            }
+        }
+        throw new IllegalArgumentException("invalid Clock duration: " + attr);
+    }
+
+    static long lcm(long a, long b) {
+        long x = a;
+        long y = b;
+        while (y != 0) {
+            long next = x % y;
+            x = y;
+            y = next;
+        }
+        return a / x * b;
     }
 
     /** Decimal, {@code 0x} hex, or {@code 0b} binary. Don't-care is null when allowed. */

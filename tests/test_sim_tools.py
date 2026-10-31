@@ -154,6 +154,42 @@ def test_headless_sequential_ticks_a_clock(tmp_path: Path) -> None:
 
 
 @requires_logisim
+def test_headless_sequential_honours_clock_durations(tmp_path: Path) -> None:
+    path = tmp_path / "dff_slow_clock.circ"
+    create_circuit_file(str(path))
+    ff = add_component(str(path), "main", "D Flip-Flop", x=300, y=200)
+    data = add_pin(str(path), "main", "D", is_output=False, x=200, y=210)
+    q = add_pin(str(path), "main", "Q", is_output=True, x=450, y=210)
+    clock = add_component(
+        str(path),
+        "main",
+        "Clock",
+        attrs={"highDuration": "3", "lowDuration": "3"},
+        x=180,
+        y=250,
+    )
+    preset = add_component(
+        str(path), "main", "Constant", attrs={"value": "0x0"}, x=320, y=140
+    )
+    clear = add_component(
+        str(path), "main", "Constant", attrs={"value": "0x0"}, x=320, y=320
+    )
+    connect(str(path), "main", data["id"], "tip", ff["id"], "D")
+    connect(str(path), "main", clock["id"], "out", ff["id"], "CLK")
+    connect(str(path), "main", preset["id"], "tip", ff["id"], "S")
+    connect(str(path), "main", clear["id"], "tip", ff["id"], "R")
+    connect(str(path), "main", ff["id"], "Q", q["id"], "tip")
+    result = simulate_sequential(
+        str(path),
+        "main",
+        inputs=["D", "<tick>"],
+        outputs=["Q"],
+        rows=[["1", "1", "1"], ["0", "1", "0"], ["1", "1", "1"]],
+    )
+    assert result["ok"], result
+
+
+@requires_logisim
 def test_sequential_accepts_hex_and_rejects_a_bad_output(tmp_path: Path) -> None:
     path = tmp_path / "buf.circ"
     create_circuit_file(str(path))

@@ -169,8 +169,8 @@ every component class (for example `Register=1, Pin=5`).
 
 `simulate_sequential` drives the circuit on the helper's own thread.
 It does not use `Simulator` or the Swing event thread. Pass `<tick>` as
-an input name to run that many full clock cycles (`toggleClocks` twice
-per cycle) after the other inputs settle. Outputs may be pins or LEDs,
+an input name to run that many complete high/low periods of every
+configured clock after the other inputs settle. Outputs may be pins or LEDs,
 matched by label. `verify_truth_table` is still the right tool when you
 want Logisim's own vector checker and you can toggle a clock *pin*
 yourself.
