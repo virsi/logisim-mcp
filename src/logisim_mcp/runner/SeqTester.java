@@ -9,9 +9,11 @@
 //   SeqTester <circ> <circuit> <in0,in1,..> <out0,out1,..>
 //   SeqTester --error-wires <circ> <circuit>
 //
-// An input named <tick> is not a pin. Its value is how many full clock
-// periods (one complete high/low cycle of every Clock) to run after the
-// other inputs are driven. Outputs may be Pins or LEDs, matched by label.
+// An input named <tick> is not a pin. Its value is how many common clock
+// superperiods to run after the other inputs are driven. One superperiod
+// is the LCM of every Clock's high+low duration, so all clocks finish on
+// their original phase (a lone default clock is one rising+falling cycle).
+// Outputs may be Pins or LEDs, matched by label.
 // stdin: one row per line, whitespace-separated values, inputs then outputs.
 
 import com.cburch.logisim.circuit.Circuit;
@@ -147,7 +149,7 @@ public class SeqTester {
             }
             String[] cells = line.split("\\s+");
             int expected = inputs.length + outputs.length;
-            if (cells.length < expected) {
+            if (cells.length != expected) {
                 System.err.println("row " + row + " has " + cells.length + " values, want " + expected);
                 return 2;
             }
@@ -170,6 +172,9 @@ public class SeqTester {
                     continue;
                 }
                 int cycles = Integer.parseInt(cells[i]);
+                if (cycles < 0) {
+                    throw new IllegalArgumentException("negative <tick>: " + cycles);
+                }
                 for (int n = 0; n < cycles; n++) {
                     for (int step = 0; step < ticksPerCycle; step++) {
                         loaded.propagator.toggleClocks();

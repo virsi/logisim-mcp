@@ -112,6 +112,24 @@ def test_mux_2to1(fresh: Path) -> None:
 
 
 @requires_logisim
+def test_mux_4bit_data(fresh: Path) -> None:
+    build_mux(str(fresh), select_bits=1, data_bits=4)
+    res = verify_truth_table(
+        str(fresh),
+        "mux",
+        inputs=["D0[4]", "D1[4]", "Sel"],
+        outputs=["Y[4]"],
+        rows=[
+            ["0x0", "0xF", "0", "0x0"],
+            ["0x0", "0xF", "1", "0xF"],
+            ["0xA", "0x5", "0", "0xA"],
+            ["0xA", "0x5", "1", "0x5"],
+        ],
+    )
+    assert res["ok"], res["failures"]
+
+
+@requires_logisim
 def test_decoder_2bit(fresh: Path) -> None:
     build_decoder(str(fresh), select_bits=2)
     res = verify_truth_table(

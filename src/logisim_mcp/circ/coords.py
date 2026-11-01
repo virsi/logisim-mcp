@@ -220,20 +220,16 @@ def overlaps(a_tl: Point, a_br: Point, b_tl: Point, b_br: Point) -> bool:
 
 
 def wire_box(start: Point, end: Point) -> tuple[Point, Point]:
-    """A 1px-thick box around an axis-aligned wire.
+    """A box padded by 1 px around an axis-aligned wire.
 
-    ``overlaps`` treats a zero-area segment as a line it can miss, so the
-    box is thickened enough that a component body covering the wire counts.
+    ``overlaps`` treats touching edges as separate, so the padding keeps a
+    component body or port exactly on the wire from being considered free.
     """
     x1, y1 = start
     x2, y2 = end
     lo_x, hi_x = (x1, x2) if x1 <= x2 else (x2, x1)
     lo_y, hi_y = (y1, y2) if y1 <= y2 else (y2, y1)
-    if lo_x == hi_x:
-        hi_x += 1
-    if lo_y == hi_y:
-        hi_y += 1
-    return (lo_x, lo_y), (hi_x, hi_y)
+    return (lo_x - 1, lo_y - 1), (hi_x + 1, hi_y + 1)
 
 
 def auto_place(

@@ -100,6 +100,16 @@ def test_auto_place_avoids_existing_wires() -> None:
     assert blocked != first
 
 
+def test_auto_place_keeps_ports_off_wires() -> None:
+    spec = gate_spec("AND")
+    wire = Wire(start=(140, 40), end=(140, 200))
+    anchor = auto_place([], spec, wires=[wire])
+    tl = (anchor[0] - spec.anchor[0], anchor[1] - spec.anchor[1])
+    br = (tl[0] + spec.bbox[0], tl[1] + spec.bbox[1])
+    assert anchor != (140, 80)
+    assert not (tl[0] <= 140 <= br[0] and tl[1] <= 200 and br[1] >= 40)
+
+
 def test_auto_place_finds_distinct_slots() -> None:
     spec = gate_spec("AND")
     placed: list[tuple[tuple[int, int], tuple[int, int]]] = []

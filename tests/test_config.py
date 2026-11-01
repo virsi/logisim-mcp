@@ -2,7 +2,13 @@ import os
 
 import pytest
 
-from logisim_mcp.config import JavaTooOld, _resolve_java, parse_java_major, resolve_javac
+from logisim_mcp.config import (
+    JavaTooOld,
+    _resolve_java,
+    load_settings,
+    parse_java_major,
+    resolve_javac,
+)
 from logisim_mcp.runner import java as java_runner
 from logisim_mcp.runner.java import JavaResult, apply_windows_prefs, prefs_classes
 
@@ -21,6 +27,33 @@ def test_resolve_java_refuses_an_older_binary(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("logisim_mcp.config._java_major", lambda _binary: 8)
     with pytest.raises(JavaTooOld, match="Java 21"):
         _resolve_java()
+
+
+def test_settings_resolves_java_lazily(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_java() -> str:
+        raise JavaTooOld("no Java 21")
+
+    monkeypatch.setattr("logisim_mcp.config._resolve_java", no_java)
+    settings = load_settings()
+    assert settings.logisim_jar.name
+    with pytest.raises(JavaTooOld, match="no Java 21"):
+        _ = settings.java_binary
+
+
+def test_helper_cache_key_tracks_source_and_jar(tmp_path) -> None:
+    source = tmp_path / "SeqTester.java"
+    jar = tmp_path / "logisim.jar"
+    for path, data in ((source, b"class A {}"), (jar, b"jar1")):
+        path.write_bytes(data)
+
+    first = java_runner._helper_cache_key([source], jar)
+    source.write_bytes(b"class B {}")
+    second = java_runner._helper_cache_key([source], jar)
+    jar.write_bytes(b"jar-two")
+    third = java_runner._helper_cache_key([source], jar)
+
+    assert first != second
+    assert second != third
 
 
 def test_javac_is_taken_from_the_java_directory(tmp_path) -> None:
@@ -93,6 +126,24 @@ def test_missing_javac_names_the_jdk(tmp_path, monkeypatch: pytest.MonkeyPatch) 
         resolve_javac(str(java))
 
 
+def test_javac_path_fallback_rejects_an_old_compiler(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    java = tmp_path / "java"
+    java.write_text("x", encoding="utf-8")
+    old_javac = tmp_path / "old" / "javac"
+    old_javac.parent.mkdir()
+    old_javac.write_text("x", encoding="utf-8")
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setattr(
+        "logisim_mcp.config.shutil.which",
+        lambda name: str(old_javac) if name == "javac" else None,
+    )
+    monkeypatch.setattr("logisim_mcp.config._javac_major", lambda _binary: 17)
+    with pytest.raises(RuntimeError, match="JDK"):
+        resolve_javac(str(java))
+
+
 def test_windows_prefs_launch_is_not_jar_mode() -> None:
     cmd = apply_windows_prefs(
         ["java", "-jar", "logisim.jar", "--no-splash", "--locale", "en"],
@@ -114,6 +165,29 @@ def test_preferences_factory_is_packaged_precompiled() -> None:
         assert data[:4] == b"\xca\xfe\xba\xbe"
 
 
+def test_helper_cache_publish_is_atomic_and_keeps_the_winner(tmp_path) -> None:
+    stage = tmp_path / "stage"
+    out = tmp_path / "out"
+    stage.mkdir()
+    for name in java_runner._HELPER_CLASS_NAMES:
+        (stage / name).write_bytes(b"new")
+
+    java_runner._publish_classes(stage, out)
+
+    assert java_runner._classes_complete(out)
+    assert not stage.exists()
+    assert (out / "SeqTester.class").read_bytes() == b"new"
+
+    loser = tmp_path / "loser"
+    loser.mkdir()
+    for name in java_runner._HELPER_CLASS_NAMES:
+        (loser / name).write_bytes(b"other")
+    java_runner._publish_classes(loser, out)
+
+    assert (out / "SeqTester.class").read_bytes() == b"new"
+    assert loser.exists()
+
+
 def test_windows_run_java_does_not_need_javac(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,6 +199,7 @@ def test_windows_run_java_does_not_need_javac(
     monkeypatch.setattr(java_runner, "_reject_diagonal_circs", lambda _args: None)
     monkeypatch.setattr(java_runner, "helper_classes", fail)
     monkeypatch.setattr(java_runner, "resolve_javac", fail)
+    monkeypatch.setattr("logisim_mcp.config._resolve_java", lambda: "java")
     monkeypatch.setattr(
         java_runner,
         "_invoke",

@@ -34,6 +34,21 @@ def test_vector_success_requires_rows_that_actually_ran() -> None:
     assert vector_succeeded(zero, "Passed: 0, Failed: 0\n", "", True) is False
 
 
+def test_empty_sequential_rows_do_not_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from logisim_mcp.runner.java import JavaResult
+
+    monkeypatch.setattr(
+        "logisim_mcp.tools.sim_tools.run_seq_tester",
+        lambda *_args, **_kwargs: JavaResult([], 0, "PASSED=0\nFAILED=0\n", ""),
+    )
+    result = simulate_sequential(
+        str(tmp_path / "unused.circ"), "main", ["A"], ["Y"], []
+    )
+    assert result["ok"] is False
+
+
 def test_format_truth_table_appends_sequential_columns() -> None:
     text = format_truth_table(
         ["Clk", "D"],
@@ -187,6 +202,15 @@ def test_headless_sequential_honours_clock_durations(tmp_path: Path) -> None:
         rows=[["1", "1", "1"], ["0", "1", "0"], ["1", "1", "1"]],
     )
     assert result["ok"], result
+    negative = simulate_sequential(
+        str(path),
+        "main",
+        inputs=["D", "<tick>"],
+        outputs=["Q"],
+        rows=[["1", "-1", "1"]],
+    )
+    assert negative["ok"] is False
+    assert "negative" in negative["stderr"]
 
 
 @requires_logisim
@@ -213,6 +237,15 @@ def test_sequential_accepts_hex_and_rejects_a_bad_output(tmp_path: Path) -> None
     )
     assert wide["ok"] is False
     assert "does not fit" in wide["stderr"]
+    extra = simulate_sequential(
+        str(path),
+        "main",
+        inputs=["A"],
+        outputs=["Y"],
+        rows=[["0", "0", "surplus"]],
+    )
+    assert extra["ok"] is False
+    assert "values" in extra["stderr"]
     echoed = simulate_sequential(
         str(path),
         "main",

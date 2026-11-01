@@ -301,10 +301,11 @@ def simulate_sequential(
     Unlike ``verify_truth_table``, this does not use ``--test-vector``.
     It binds ``CircuitState`` to the helper process and steps
     ``Propagator`` directly, which is what actually ticks a ``Clock``
-    component. Name an input ``<tick>`` to run that many complete
-    high/low periods of every configured clock (rising edge followed by
-    falling edge) after the other inputs are applied. ``rows`` are
-    whitespace-separated values: inputs, then the expected outputs.
+    component. Name an input ``<tick>`` to run that many common clock
+    superperiods after the other inputs are applied. One superperiod is
+    the LCM of every configured clock's high+low period; a lone clock
+    therefore runs exactly that many complete high/low cycles. ``rows``
+    are whitespace-separated values: inputs, then the expected outputs.
 
     Values may be decimal, ``0x`` hex, or ``0b`` binary, and must fit
     the pin width. An output cell of ``x``, ``-``, or ``<DC>`` is not
@@ -324,7 +325,10 @@ def simulate_sequential(
         elif line.startswith("FAILED="):
             failed = int(line.split("=", 1)[1])
     return {
-        "ok": res.ok and failed == 0 and passed == len(rows),
+        "ok": bool(rows)
+        and res.ok
+        and failed == 0
+        and passed == len(rows),
         "passed": passed,
         "failed": failed,
         "exit_code": res.exit_code,

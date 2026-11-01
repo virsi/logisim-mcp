@@ -94,11 +94,14 @@ def _build_nets(project: Project, circuit: Circuit) -> tuple[dict[Point, int], d
             if on_segment(point, wire.start, wire.end):
                 uf.union(wire.start, point)
 
-    # Tunnel labels create equivalences across the whole circuit.
+    # Tunnel labels create equivalences across the whole circuit. Logisim
+    # trims surrounding whitespace and ignores an empty label.
     tunnels_by_label: dict[str, list[Point]] = defaultdict(list)
     for c in circuit.components:
         if c.name == "Tunnel":
-            tunnels_by_label[c.attrs.get("label", "")].append(c.loc)
+            label = c.attrs.get("label", "").strip()
+            if label:
+                tunnels_by_label[label].append(c.loc)
     for label, locs in tunnels_by_label.items():
         if len(locs) <= 1:
             continue
@@ -201,7 +204,7 @@ def _describe(project: Project, circuit: Circuit) -> str:
                 continue
             pt = (c.loc[0] + spec.ports[0].dx, c.loc[1] + spec.ports[0].dy)
             nid = point_to_net.get(pt)
-            if nid is not None and (lbl := c.attrs.get("label")):
+            if nid is not None and (lbl := c.attrs.get("label", "").strip()):
                 net_tunnel_labels[nid].add(lbl)
             continue
         spec = _spec_for(project, c)
@@ -366,7 +369,7 @@ def check_circuit_drc(
     wires that pass across a component port without ending on it.
     ``diagonal_wires`` are segments Logisim will reject. ``error_wires``
     is how many wires carry ``Value.ERROR`` after a synchronous propagate;
-    it is ``None`` when the Logisim JAR is not available.
+    it is ``None`` when the Logisim JAR or a JDK is not available.
     """
     p = Path(path).expanduser()
     if not p.exists():
@@ -378,10 +381,13 @@ def check_circuit_drc(
     report["circuit"] = name
     report["error_wires"] = None
     if probe_errors and not report["diagonal_wires"]:
+        from ..config import HelperUnavailable, JavaTooOld
         from ..runner.java import LogisimNotFound, count_error_wires
 
         try:
             report["error_wires"] = count_error_wires(str(p), name)
-        except LogisimNotFound:
+        except (LogisimNotFound, HelperUnavailable, JavaTooOld, OSError):
+            # The static report is still useful on a JRE-only install or
+            # when the optional helper cannot be compiled.
             report["error_wires"] = None
     return report

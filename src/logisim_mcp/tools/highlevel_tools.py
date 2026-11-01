@@ -320,7 +320,13 @@ def build_mux(
 
     spec = resolve("Multiplexer", select_bits=select_bits)
     n_data = 1 << select_bits
-    mux = _place(project, c, spec, (480, 200), {"select": str(select_bits)})
+    mux = _place(
+        project,
+        c,
+        spec,
+        (480, 200),
+        {"select": str(select_bits), "width": str(data_bits)},
+    )
 
     # Lay out data input pins on the left, one per row.
     for i in range(n_data):

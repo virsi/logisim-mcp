@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..config import SETTINGS, resolve_javac
+from ..config import SETTINGS, HelperUnavailable, resolve_javac
 
 
 @dataclass
@@ -66,8 +67,15 @@ def apply_windows_prefs(cmd: list[str], prefs_classpath: str | None) -> list[str
 def _reject_diagonal_circs(args: list[str]) -> None:
     from ..circ.parser import diagonal_wire_messages
 
-    for arg in args:
-        path = Path(arg)
+    candidates = list(args)
+    if "--new-file-format" in args:
+        # Only the input is parsed; an existing output file is overwritten.
+        index = args.index("--new-file-format")
+        candidates = args[index + 1 : index + 2]
+    for arg in candidates:
+        path = Path(arg).expanduser()
+        if not path.is_absolute():
+            path = SETTINGS.workdir / path
         if path.suffix.lower() != ".circ" or not path.is_file():
             continue
         bad = diagonal_wire_messages(path)
@@ -144,52 +152,108 @@ def prefs_classes() -> Path:
     return _PREFS_CLASSES_DIR
 
 
+def _file_fingerprint(path: Path) -> str:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return f"{path.resolve()}:missing"
+    return f"{path.resolve()}:{digest.hexdigest()}"
+
+
+def _helper_cache_key(sources: list[Path], jar: Path) -> str:
+    """Hash everything that changes the compiled helper classes.
+
+    Source mtimes are not enough: a wheel can preserve old timestamps, and
+    a different Logisim JAR can keep the same size and mtime. File content
+    digests make both changes invalidate the cache.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"helper-build-2/javac --release 21\0")
+    for source in sources:
+        digest.update(source.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(source.read_bytes())
+        digest.update(b"\0")
+    digest.update(_file_fingerprint(jar).encode("utf-8"))
+    digest.update(b"\0")
+    return digest.hexdigest()[:20]
+
+
+def _classes_complete(out: Path) -> bool:
+    return all((out / name).is_file() for name in _HELPER_CLASS_NAMES)
+
+
+def _publish_classes(stage: Path, out: Path) -> None:
+    """Publish a fully compiled helper directory in one atomic rename.
+
+    Several server processes may compile the same cache concurrently. A
+    directory rename means readers never observe a half-published set of
+    top-level and nested classes; the loser of the race simply uses the
+    winner's complete directory.
+    """
+    try:
+        os.replace(stage, out)
+    except OSError:
+        if not _classes_complete(out):
+            raise
+
+
 def helper_classes() -> Path:
     """Compile SeqTester once; sequential simulation still needs a JDK.
 
-    A temp directory receives the compile so a failed or concurrent
-    ``javac`` cannot leave a fresh ``SeqTester.class`` beside a missing
-    nested class.
+    Each source/JAR combination gets its own cache directory. A temp
+    directory receives the compile, then one directory rename publishes
+    the complete set so concurrent server processes cannot mix class files
+    from different builds. The compiler is checked only on a cache miss,
+    so a complete cache still works after the JDK is removed.
     """
     with _COMPILE_LOCK:
         src_dir = Path(__file__).resolve().parent
         sources = [src_dir / "SeqTester.java"]
-        cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-        out = cache_root / "logisim-mcp" / "classes"
-        out.mkdir(parents=True, exist_ok=True)
-        newest = max(source.stat().st_mtime for source in sources)
-        cached = [out / name for name in _HELPER_CLASS_NAMES]
-        if all(path.exists() and path.stat().st_mtime >= newest for path in cached):
-            return out
         jar = _ensure_jar()
+        cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        parent = cache_root / "logisim-mcp"
+        parent.mkdir(parents=True, exist_ok=True)
+        key = _helper_cache_key(sources, jar)
+        out = parent / f"classes-{key}"
+        if _classes_complete(out):
+            return out
         javac = resolve_javac(SETTINGS.java_binary)
-        stage = Path(tempfile.mkdtemp(prefix="classes-", dir=out))
+        stage = Path(tempfile.mkdtemp(prefix=f".classes-{key}-", dir=parent))
         try:
-            proc = subprocess.run(
-                [
-                    javac,
-                    "--release",
-                    "21",
-                    "-cp",
-                    str(jar),
-                    "-d",
-                    str(stage),
-                    *[str(source) for source in sources],
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(proc.stderr or proc.stdout or "javac failed")
-            for name in _HELPER_CLASS_NAMES:
-                if not (stage / name).is_file():
-                    raise RuntimeError(f"javac did not write {name}")
-            for produced in stage.glob("*.class"):
-                dest = out / produced.name
-                if dest.exists():
-                    dest.unlink()
-                os.replace(produced, dest)
+            try:
+                proc = subprocess.run(
+                    [
+                        javac,
+                        "--release",
+                        "21",
+                        "-cp",
+                        str(jar),
+                        "-d",
+                        str(stage),
+                        *[str(source) for source in sources],
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if proc.returncode != 0:
+                    raise HelperUnavailable(
+                        proc.stderr or proc.stdout or "javac failed"
+                    )
+                for name in _HELPER_CLASS_NAMES:
+                    if not (stage / name).is_file():
+                        raise HelperUnavailable(f"javac did not write {name}")
+                _publish_classes(stage, out)
+            except HelperUnavailable:
+                raise
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise HelperUnavailable(
+                    f"could not build helper classes: {exc}"
+                ) from exc
         finally:
             shutil.rmtree(stage, ignore_errors=True)
         return out

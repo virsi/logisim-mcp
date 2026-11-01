@@ -169,11 +169,12 @@ every component class (for example `Register=1, Pin=5`).
 
 `simulate_sequential` drives the circuit on the helper's own thread.
 It does not use `Simulator` or the Swing event thread. Pass `<tick>` as
-an input name to run that many complete high/low periods of every
-configured clock after the other inputs settle. Outputs may be pins or LEDs,
-matched by label. `verify_truth_table` is still the right tool when you
-want Logisim's own vector checker and you can toggle a clock *pin*
-yourself.
+an input name to run that many common clock superperiods after the other
+inputs settle. One superperiod is the LCM of every configured Clock's
+high+low period (one full high/low cycle); a lone clock runs that many
+full cycles. Outputs may be pins or LEDs, matched by label.
+`verify_truth_table` is still the right tool when you want Logisim's own
+vector checker and you can toggle a clock *pin* yourself.
 
 ## Bus notation in `verify_truth_table`
 

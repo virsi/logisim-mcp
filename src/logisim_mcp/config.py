@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_LOGISIM_JAR = "/Applications/Logisim-evolution.app/Contents/app/logisim-evolution-5.0.0-all.jar"
@@ -16,13 +16,22 @@ MAX_TIMEOUT_SEC = 600
 DEFAULT_LOCALE = "en"
 
 
-@dataclass(frozen=True)
+@dataclass
 class Settings:
     logisim_jar: Path
-    java_binary: str
     workdir: Path
     timeout_sec: int
     locale: str
+    _java_binary: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    @property
+    def java_binary(self) -> str:
+        """Resolve Java only when a Java-dependent operation needs it."""
+        if self._java_binary is None:
+            self._java_binary = _resolve_java()
+        return self._java_binary
 
     def java_cmd(self, *extra: str) -> list[str]:
         return [
@@ -66,6 +75,20 @@ def _java_major(binary: str) -> int | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return parse_java_major(proc.stderr + proc.stdout)
+
+
+def _javac_major(binary: str) -> int | None:
+    try:
+        proc = subprocess.run(
+            [binary, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"javac\s+(?:1\.)?(\d+)", proc.stdout + proc.stderr)
+    return int(match.group(1)) if match else None
 
 
 def _java_candidates() -> list[str]:
@@ -112,6 +135,10 @@ def _java_candidates() -> list[str]:
 
 class JavaTooOld(RuntimeError):
     """No Java 21 or newer binary was found."""
+
+
+class HelperUnavailable(RuntimeError):
+    """The optional Java helper could not be compiled or launched."""
 
 
 def _resolve_java() -> str:
@@ -161,21 +188,26 @@ def resolve_javac(java_binary: str) -> str:
     # JAVA_HOME candidates may be recorded as ``…/bin/java`` without ``.exe``
     # on Windows; still prefer ``javac.exe`` beside that binary over PATH.
     names = _javac_names()
+
+    def usable(path: str) -> bool:
+        major = _javac_major(path)
+        return major is None or major >= _MIN_JAVA
+
     for name in names:
         sibling = java_path.with_name(name)
-        if sibling.is_file():
+        if sibling.is_file() and usable(str(sibling)):
             return str(sibling)
     java_home = os.environ.get("JAVA_HOME")
     if java_home:
         for name in names:
             candidate = Path(java_home) / "bin" / name
-            if candidate.is_file():
+            if candidate.is_file() and usable(str(candidate)):
                 return str(candidate)
     for name in names:
         found = shutil.which(name)
-        if found:
+        if found and usable(found):
             return found
-    raise RuntimeError(
+    raise HelperUnavailable(
         "javac was not found next to the Java 21 binary or on PATH. "
         "Sequential simulation needs a JDK, not a JRE-only install."
     )
@@ -190,7 +222,6 @@ def load_settings() -> Settings:
     locale = os.environ.get("LOGISIM_LOCALE", DEFAULT_LOCALE)
     return Settings(
         logisim_jar=jar_path,
-        java_binary=_resolve_java(),
         workdir=_resolve_workdir(),
         timeout_sec=timeout,
         locale=locale,
