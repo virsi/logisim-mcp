@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from logisim_mcp.circ.factory import empty_project
-from logisim_mcp.circ.model import Component, Wire
+from logisim_mcp.circ.model import Circuit, Component, Wire
 from logisim_mcp.circ.writer import save
 from logisim_mcp.config import HelperUnavailable, JavaTooOld, SETTINGS
 from logisim_mcp.runner.java import _reject_diagonal_circs, run_java
@@ -103,6 +103,26 @@ def test_check_circuit_drc_survives_old_java(
     monkeypatch.setattr("logisim_mcp.config._resolve_java", no_java)
     monkeypatch.setattr("logisim_mcp.runner.java._ensure_jar", lambda: jar)
     report = check_circuit_drc(str(path))
+    assert report["error_wires"] is None
+
+
+def test_check_circuit_drc_skips_probe_when_another_circuit_has_diagonals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "mixed.circ"
+    project = empty_project()
+    broken = Circuit(name="broken", attrs={"circuit": "broken"})
+    broken.wires.append(Wire((0, 0), (30, 40)))
+    project.circuits.append(broken)
+    save(project, path)
+
+    def must_not_probe(*_args, **_kwargs):
+        raise AssertionError("must not run Java when any circuit has diagonals")
+
+    monkeypatch.setattr("logisim_mcp.runner.java.count_error_wires", must_not_probe)
+    report = check_circuit_drc(str(path))
+    assert report["circuit"] == "main"
+    assert report["diagonal_wires"] == []
     assert report["error_wires"] is None
 
 

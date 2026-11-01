@@ -380,14 +380,20 @@ def check_circuit_drc(
     report = static_drc(project, c)
     report["circuit"] = name
     report["error_wires"] = None
-    if probe_errors and not report["diagonal_wires"]:
+    any_diagonals = any(
+        is_diagonal(wire)
+        for project_circuit in project.circuits
+        for wire in project_circuit.wires
+    )
+    if probe_errors and not any_diagonals:
         from ..config import HelperUnavailable, JavaTooOld
         from ..runner.java import LogisimNotFound, count_error_wires
 
         try:
             report["error_wires"] = count_error_wires(str(p), name)
-        except (LogisimNotFound, HelperUnavailable, JavaTooOld, OSError):
-            # The static report is still useful on a JRE-only install or
-            # when the optional helper cannot be compiled.
+        except (LogisimNotFound, HelperUnavailable, JavaTooOld, OSError, ValueError):
+            # The static report is still useful on a JRE-only install,
+            # when the optional helper cannot be compiled, or when
+            # Logisim's preflight rejects a different circuit.
             report["error_wires"] = None
     return report
