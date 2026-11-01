@@ -10,6 +10,7 @@ from logisim_mcp.tools.describe_tools import check_circuit_drc
 from logisim_mcp.tools.io_tools import create_circuit_file
 from logisim_mcp.tools.sim_tools import (
     _parse_test_vector_output,
+    count_components,
     format_truth_table,
     run_test_vector,
     simulate_sequential,
@@ -47,6 +48,25 @@ def test_empty_sequential_rows_do_not_pass(
         str(tmp_path / "unused.circ"), "main", ["A"], ["Y"], []
     )
     assert result["ok"] is False
+
+
+def test_count_components_keeps_a_component_named_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from logisim_mcp.runner.java import JavaResult
+
+    stdout = (
+        "1\t1\tTotalAdder\tlab\n"
+        "4\t4\tTOTAL (without project’s sub circuits)\n"
+        "4\t4\tTOTAL (with sub circuits)\n"
+    )
+    monkeypatch.setattr(
+        "logisim_mcp.tools.sim_tools.run_java",
+        lambda *_args, **_kwargs: JavaResult([], 0, stdout, ""),
+    )
+    result = count_components("unused.circ")
+    assert result["components"]["TotalAdder"] == 1
+    assert result["total"] == 4
 
 
 def test_format_truth_table_appends_sequential_columns() -> None:

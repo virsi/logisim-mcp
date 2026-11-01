@@ -338,9 +338,13 @@ def simulate_sequential(
 
 
 # Component names may contain spaces ("AND Gate"). The library is the
-# last token. TOTAL lines are handled separately.
+# last token. TOTAL summary lines are matched exactly so a component such
+# as "TotalAdder" is not mistaken for one.
 _RE_STATS_ROW = re.compile(r"^\s*(\d+)\s+(\d+)\s+(.+?)\s+(\S+)\s*$")
-_RE_STATS_TOTAL = re.compile(r"^\s*(\d+)\s+(\d+)\s+TOTAL", re.IGNORECASE)
+_RE_STATS_TOTAL = re.compile(
+    r"^\s*(\d+)\s+(\d+)\s+TOTAL\s+\((?:without|with)\b.*\)\s*$",
+    re.IGNORECASE,
+)
 
 
 @mcp.tool()
@@ -363,9 +367,9 @@ def count_components(
     components: dict[str, int] = {}
     total = 0
     for line in res.stdout.splitlines():
-        if "TOTAL" in line.upper():
-            m = _RE_STATS_TOTAL.match(line)
-            if m and "without" in line.lower():
+        m = _RE_STATS_TOTAL.match(line)
+        if m:
+            if "without" in line.lower():
                 total = int(m.group(1))
             continue
         m = _RE_STATS_ROW.match(line)
