@@ -17,7 +17,7 @@ from ..circ.coords import (
     route_l,
     snap,
 )
-from ..circ.library import ComponentSpec, resolve
+from ..circ.library import ComponentSpec, circuit_port_points, resolve, spec_for_component
 from ..circ.model import Component, Point, Project, Wire, fmt_loc, parse_loc
 from ..circ.parser import parse
 from ..circ.writer import save
@@ -33,49 +33,18 @@ def _load(path: str) -> tuple[Path, Project]:
 
 def _spec_for_component(project: Project, comp: Component) -> ComponentSpec:
     """Best-effort spec lookup for an existing component."""
-    desc = project.lib_desc_for_id(comp.lib)
-    if desc == "#Gates":
-        inputs = int(comp.attrs.get("inputs", "2"))
-        from ..circ.library import GATE_TYPES, gate_spec
+    spec = spec_for_component(project, comp)
+    if spec is None:
+        desc = project.lib_desc_for_id(comp.lib)
+        raise KeyError(
+            f"no spec for {comp.name!r} from {desc!r}; "
+            "use add_component with explicit attrs for unsupported types"
+        )
+    return spec
 
-        key = next((k for k, v in GATE_TYPES.items() if v == comp.name), None)
-        if key is None:
-            raise KeyError(f"unknown gate component name {comp.name!r}")
-        return gate_spec(key, inputs=inputs)
-    if desc == "#Wiring":
-        if comp.name == "Pin":
-            is_out = comp.attrs.get("output", "false") == "true"
-            return resolve("OutputPin" if is_out else "InputPin")
-        if comp.name == "Tunnel":
-            return resolve("Tunnel")
-        if comp.name == "Clock":
-            return resolve("Clock")
-        if comp.name == "Constant":
-            return resolve("Constant")
-    if desc == "#Plexers":
-        if comp.name == "Multiplexer":
-            sel = int(comp.attrs.get("select", "1"))
-            return resolve("Multiplexer", select_bits=sel)
-        if comp.name == "Demultiplexer":
-            sel = int(comp.attrs.get("select", "1"))
-            return resolve("Demultiplexer", select_bits=sel)
-        if comp.name == "Decoder":
-            sel = int(comp.attrs.get("select", "1"))
-            return resolve("Decoder", select_bits=sel)
-    if desc == "#Arithmetic":
-        if comp.name == "Adder":
-            return resolve("Adder", bits=int(comp.attrs.get("width", "1")))
-        if comp.name == "Comparator":
-            return resolve("Comparator", bits=int(comp.attrs.get("width", "1")))
-    if desc == "#Memory":
-        if comp.name == "Register":
-            return resolve("Register", bits=int(comp.attrs.get("width", "1")))
-        if comp.name == "Counter":
-            return resolve("Counter", bits=int(comp.attrs.get("width", "1")))
-    raise KeyError(
-        f"no spec for {comp.name!r} from {desc!r}; "
-        "use add_component with explicit attrs for unsupported types"
-    )
+
+def _route_between(project: Project, circuit: Any, a: Point, b: Point) -> list[Wire]:
+    return route_l(a, b, circuit_port_points(project, circuit), circuit.wires)
 
 
 def _occupied(project: Project, circuit_name: str) -> list[tuple[Point, Point]]:
@@ -94,7 +63,12 @@ def _resolve_loc(project: Project, circuit_name: str, spec: ComponentSpec,
                  x: int | None, y: int | None) -> Point:
     if x is not None and y is not None:
         return snap((x, y))
-    return auto_place(_occupied(project, circuit_name), spec)
+    circuit = project.require_circuit(circuit_name)
+    return auto_place(
+        _occupied(project, circuit_name),
+        spec,
+        wires=circuit.wires,
+    )
 
 
 def _ensure_lib(project: Project, desc: str) -> str:
@@ -201,8 +175,10 @@ def add_component(
     """Generic component placer.
 
     ``type_key`` is one of the keys in
-    :data:`logisim_mcp.circ.library.SPEC_FACTORIES` — e.g. ``"Multiplexer"``,
-    ``"Adder"``, ``"Register"``, ``"Counter"``, ``"Constant"``, ``"Clock"``.
+    :data:`logisim_mcp.circ.library.SPEC_FACTORIES` — e.g.     ``"Multiplexer"``,
+    ``"Adder"``, ``"Register"``, ``"Counter"``, ``"Constant"``, ``"Clock"``,
+    ``"D Flip-Flop"``, ``"J-K Flip-Flop"``, ``"T Flip-Flop"``,
+    ``"S-R Flip-Flop"``, ``"LED"``.
     """
     p, project = _load(path)
     spec = resolve(type_key, bits=bits, select_bits=select_bits)
@@ -222,7 +198,7 @@ def add_wire(
     """Add a wire segment (or an L-shaped pair) between two grid points."""
     p, project = _load(path)
     c = project.require_circuit(circuit)
-    wires = route_l(tuple(from_xy), tuple(to_xy))
+    wires = _route_between(project, c, tuple(from_xy), tuple(to_xy))
     c.wires.extend(wires)
     save(project, p)
     return {"wires_added": len(wires)}
@@ -257,7 +233,7 @@ def connect(
     dst_spec = _spec_for_component(project, dst)
     a = port_location(src, src_spec, from_port)
     b = port_location(dst, dst_spec, to_port)
-    wires = route_l(a, b)
+    wires = _route_between(project, c, a, b)
     c.wires.extend(wires)
     save(project, p)
     return {"from": a, "to": b, "wires_added": len(wires)}

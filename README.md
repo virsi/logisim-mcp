@@ -18,7 +18,7 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-MCP (Model Context Protocol) server for [Logisim Evolution](https://github.com/logisim-evolution/logisim-evolution) 4.x.
+MCP (Model Context Protocol) server for [Logisim Evolution](https://github.com/logisim-evolution/logisim-evolution) 5.0.
 Lets a large language model design, edit and verify digital circuits in
 the native `.circ` format **without ever opening the GUI**. Built for
 students doing digital-logic labs with an AI assistant.
@@ -30,71 +30,60 @@ The server speaks stdio MCP. Tools fall into five groups:
 | **IO** | `create_circuit_file`, `read_circuit_file`, `list_circuits`, `add_subcircuit`, `rename_circuit`, `delete_circuit`, `set_main_circuit` |
 | **Builder** (low-level) | `add_pin`, `add_gate`, `add_component`, `add_wire`, `connect`, `add_tunnel`, `remove_component` |
 | **High-level** | `build_half_adder`, `build_full_adder`, `build_ripple_adder`, `build_mux`, `build_decoder`, `build_comparator`, `build_register`, `build_counter`, `build_from_truth_table` |
-| **Simulation** | `run_test_vector`, `run_test_circuit`, `simulate_tty`, `verify_truth_table`, `convert_legacy_circ`, `count_components` |
-| **Inspection** | `describe_circuit`, `describe_project` |
+| **Simulation** | `run_test_vector`, `run_test_circuit`, `simulate_tty`, `verify_truth_table`, `simulate_sequential`, `convert_legacy_circ`, `count_components` |
+| **Inspection** | `describe_circuit`, `describe_project`, `check_circuit_drc` |
 
 ## Requirements
 
-- macOS / Linux
+- macOS / Linux / Windows
 - Python ≥ 3.10
-- Java ≥ 17 (`java` on `$PATH`)
-- Logisim Evolution 4.x JAR — download the fat-jar from
+- Java ≥ 21 (`java` on `$PATH`, or `JAVA` / `JAVA_HOME`; Scoop, Adoptium, and JetBrains Runtime are scanned when the default `java` is older)
+- Logisim Evolution 5.0 JAR — download the fat-jar from
   [logisim-evolution releases](https://github.com/logisim-evolution/logisim-evolution/releases),
   or install the macOS `.app` which ships the same jar at
-  `/Applications/Logisim-evolution.app/Contents/app/logisim-evolution-4.0.0-all.jar`.
+  `/Applications/Logisim-evolution.app/Contents/app/logisim-evolution-5.0.0-all.jar`.
 
 ## Install
 
-```bash
-git clone https://github.com/virsi/logisim-mcp.git
-cd logisim-mcp
-python3 -m venv .venv
-.venv/bin/pip install -e .
-```
-
-`pip install -e .[dev]` if you also want pytest.
-
-## Try it
+With [uv](https://docs.astral.sh/uv/) installed, register the server with Cursor, Claude Desktop, or Claude Code. You do not clone this repo. Setup asks where the Logisim jar is, shows the files it will write, and waits for a yes.
 
 ```bash
-.venv/bin/python -m logisim_mcp        # starts the stdio server
+uvx --from git+https://github.com/virsi/logisim-mcp logisim-mcp setup
 ```
 
-Or hit it with the MCP inspector:
-
-```bash
-.venv/bin/python -m mcp dev .venv/bin/python -m logisim_mcp
-```
-
-## Connect to Claude Desktop
-
-Add the following block to `~/Library/Application Support/Claude/claude_desktop_config.json`
-(macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows), then restart Claude Desktop.
+Restart the agent. It then has the tools (`describe_circuit`, `add_gate`, `check_circuit_drc`, `simulate_sequential`, and the rest). The config it writes looks like this:
 
 ```json
 {
   "mcpServers": {
     "logisim": {
-      "command": "/ABSOLUTE/PATH/TO/logisim-mcp/.venv/bin/python",
-      "args": ["-m", "logisim_mcp"],
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/virsi/logisim-mcp", "logisim-mcp"],
       "env": {
-        "LOGISIM_JAR": "/ABSOLUTE/PATH/TO/logisim-evolution-4.0.0-all.jar"
+        "LOGISIM_JAR": "/ABSOLUTE/PATH/TO/logisim-evolution-5.0.0-all.jar"
       }
     }
   }
 }
 ```
 
-## Connect to Claude Code
+From a checkout you already have, `.venv/bin/logisim-mcp setup` registers that venv's Python instead of `uvx`. `--client cursor` limits which agent is written. `--dry-run` prints the plan only.
+
+If setup cannot see the agent, the same block goes in `~/.cursor/mcp.json`, Claude Desktop's `claude_desktop_config.json`, or Claude Code via `claude mcp add`.
+
+## Work on the code
 
 ```bash
-claude mcp add logisim \
-  --scope user \
-  --env LOGISIM_JAR=/ABSOLUTE/PATH/TO/logisim-evolution-4.0.0-all.jar \
-  -- /ABSOLUTE/PATH/TO/logisim-mcp/.venv/bin/python -m logisim_mcp
+git clone https://github.com/virsi/logisim-mcp.git
+cd logisim-mcp
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
 ```
 
-Then `claude mcp list` should show `logisim: … - ✓ Connected`.
+```bash
+.venv/bin/python -m logisim_mcp        # stdio server, what the agent launches
+.venv/bin/python -m mcp dev .venv/bin/python -m logisim_mcp
+```
 
 ## Environment
 
@@ -141,37 +130,51 @@ CI without Java still passes the structural part of the suite.
 | `build_mux` | yes | truth-table 8/8 passes (2-to-1) |
 | `build_decoder` | yes | truth-table 4/4 passes (2-to-4) |
 | `build_comparator` | yes | truth-table 16/16 passes (4-bit) |
-| `build_from_truth_table` | yes | structural |
-| `build_register` | yes | structural (see *Sequential circuits* below) |
-| `build_counter` | yes | structural (see *Sequential circuits* below) |
+| `build_from_truth_table` | yes | sequential rows (XOR, NAND, 6 minterms) |
+| `build_register` | yes | sequential vector (clock driven in the rows) |
+| `build_counter` | yes | structural (drive the clock the same way as a register) |
 
 ## Sequential circuits
 
 `build_register` and `build_counter` emit schematics using Logisim's
-`logisim_evolution` appearance with port offsets verified against the
-Logisim source. End-to-end sequential verification via `--test-vector`
-is limited by Logisim 4.0.0 itself: the CLI test runner samples a
-steady-state per row and does not auto-tick the clock between rows.
-The MCP server therefore exposes:
+`logisim_evolution` appearance. Port offsets match Logisim Evolution 5.0.0.
 
-- `count_components` — opens the file through `--tty stats`. Exit code 0
-  proves the schematic is structurally valid; the histogram reports every
-  component class so the LLM can sanity-check what it built
-  (e.g. `Register=1, Pin=5`).
+Logisim 4.1 and later, including 5.0.0, can check sequential circuits
+from `--test-vector`. Add a `<set>` column and a `<seq>` column.
+Rows that share a set and have `<seq>` greater than 0 run in that order
+without a reset, so you drive the clock pin through its edges yourself.
+`<seq>` 0 still resets before the row. `verify_truth_table` writes those
+columns when you pass `sets` and `steps`:
 
-A partially-working headless test runner (`SeqTester.java`) is included
-under `src/logisim_mcp/runner/` for reference — it shows how one would
-drive pins via the Logisim Java API. The current Simulator expects a
-Swing event-dispatch thread that's awkward to provide in pure headless
-mode, so simulation of generated circuits is best done by:
+```python
+verify_truth_table(
+    path, "register",
+    inputs=["D", "Clk", "En", "Rst"], outputs=["Q"],
+    rows=[
+        ["0", "0", "1", "1", "0"],  # reset
+        ["1", "0", "1", "0", "0"],  # D=1, clock still low
+        ["1", "1", "1", "0", "1"],  # rising edge captures D
+    ],
+    sets=[1, 1, 1],
+    steps=[1, 2, 3],
+)
+```
 
-1. **The Logisim GUI**: open the `.circ`, then *Simulate → Reset
-   Simulation* and *Simulate → Ticks Enabled* (or step manually with
-   Ctrl-K).
-2. **A self-checking testbench** inside the `.circ`: a `Clock` drives
-   the register, expected outputs come from a ROM, a comparator drives
-   a `Halt` element when a mismatch is found, and `run_test_circuit`
-   (already wrapped) reports pass/fail.
+`<DC>` on an output always passes. `<float>` drives or expects
+high-impedance.
+
+`count_components` still opens the file through `--tty stats`. Exit
+code 0 proves the schematic is structurally valid; the histogram reports
+every component class (for example `Register=1, Pin=5`).
+
+`simulate_sequential` drives the circuit on the helper's own thread.
+It does not use `Simulator` or the Swing event thread. Pass `<tick>` as
+an input name to run that many common clock superperiods after the other
+inputs settle. One superperiod is the LCM of every configured Clock's
+high+low period (one full high/low cycle); a lone clock runs that many
+full cycles. Outputs may be pins or LEDs, matched by label.
+`verify_truth_table` is still the right tool when you want Logisim's own
+vector checker and you can toggle a clock *pin* yourself.
 
 ## Bus notation in `verify_truth_table`
 
@@ -203,8 +206,9 @@ Advisory rather than a public issue.
 
 ## Known limitations
 
-- Sequential simulation through `verify_truth_table` is only reliable
-  for purely combinational circuits.
+- A `Clock` component is not ticked by `verify_truth_table`. Drive a
+  clock *pin* with `<set>` / `<seq>` rows, or use `simulate_sequential`
+  with a `<tick>` column.
 - Fan-out for combinational signals is implemented via tunnels — the
   result is electrically correct but the auto-layout is functional, not
   pretty.
@@ -220,7 +224,6 @@ Advisory rather than a public issue.
 See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome, in particular:
 
 - Wrapping `--load`/`--save` for RAM image workflows.
-- Adding a working headless sequential runner (`SeqTester` is a stub).
 - An SVG renderer for `.circ` files so the LLM can also "see" schematics.
 
 ## License

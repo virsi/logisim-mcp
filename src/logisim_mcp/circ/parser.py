@@ -17,7 +17,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from .model import Circuit, Component, Lib, Project, Wire, parse_loc
+from .model import Circuit, Component, Lib, Project, Wire, fmt_loc, parse_loc
 
 _KNOWN_PROJECT_CHILDREN = {"lib", "main", "circuit"}
 _KNOWN_CIRCUIT_CHILDREN = {"a", "comp", "wire"}
@@ -70,6 +70,28 @@ def _tostring(el: etree._Element) -> str:
     return etree.tostring(el, encoding="unicode")
 
 
+def is_diagonal(wire: Wire) -> bool:
+    """Logisim rejects wires that are not horizontal or vertical.
+
+    ``Loader.openLogisimFile`` reports that with a modal dialog, which
+    hangs a headless run until the subprocess times out.
+    """
+    return wire.start[0] != wire.end[0] and wire.start[1] != wire.end[1]
+
+
+def diagonal_wire_messages(path: str | Path) -> list[str]:
+    """Human-readable locations of diagonal wires in a ``.circ`` file."""
+    project = parse(path)
+    found: list[str] = []
+    for circuit in project.circuits:
+        for wire in circuit.wires:
+            if is_diagonal(wire):
+                found.append(
+                    f"{circuit.name}: {fmt_loc(wire.start)} -> {fmt_loc(wire.end)}"
+                )
+    return found
+
+
 def parse(path_or_xml: str | Path) -> Project:
     """Parse a ``.circ`` file or raw XML string into a :class:`Project`.
 
@@ -107,7 +129,7 @@ def parse(path_or_xml: str | Path) -> Project:
         raise ValueError(f"expected <project> root, got <{root.tag}>")
 
     project = Project(
-        source=root.get("source", "4.0.0"),
+        source=root.get("source", "5.0.0"),
         version=root.get("version", "1.0"),
     )
 
@@ -158,10 +180,16 @@ def _parse_circuit(el: etree._Element) -> Circuit:
                 )
             )
         elif tag == "wire":
+            extra = {
+                key: value
+                for key, value in child.attrib.items()
+                if key not in ("from", "to")
+            }
             circuit.wires.append(
                 Wire(
                     start=parse_loc(child.get("from", "(0,0)")),
                     end=parse_loc(child.get("to", "(0,0)")),
+                    attrs=extra,
                 )
             )
         else:

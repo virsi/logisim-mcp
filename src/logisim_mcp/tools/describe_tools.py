@@ -15,9 +15,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from ..circ.library import ComponentSpec, resolve, gate_spec, GATE_TYPES
+from ..circ.coords import on_segment
+from ..circ.library import ComponentSpec, is_output_pin, spec_for_component
 from ..circ.model import Circuit, Component, Point, Project, fmt_loc
-from ..circ.parser import parse
+from ..circ.parser import is_diagonal, parse
 from ..server import mcp
 
 
@@ -25,41 +26,7 @@ from ..server import mcp
 
 
 def _spec_for(project: Project, comp: Component) -> ComponentSpec | None:
-    try:
-        desc = project.lib_desc_for_id(comp.lib)
-    except KeyError:
-        return None
-    name = comp.name
-    if desc == "#Gates":
-        for key, label in GATE_TYPES.items():
-            if label == name:
-                inputs = int(comp.attrs.get("inputs", "2"))
-                return gate_spec(key, inputs=inputs)
-        return None
-    if desc == "#Wiring":
-        if name == "Pin":
-            is_out = comp.attrs.get("output", "false") == "true"
-            return resolve("OutputPin" if is_out else "InputPin")
-        if name == "Tunnel":
-            return resolve("Tunnel")
-        if name == "Clock":
-            return resolve("Clock")
-        if name == "Constant":
-            return resolve("Constant")
-    if desc == "#Plexers" and name in ("Multiplexer", "Demultiplexer", "Decoder"):
-        sel = int(comp.attrs.get("select", "1"))
-        return resolve(name, select_bits=sel)
-    if desc == "#Arithmetic":
-        if name == "Adder":
-            return resolve("Adder", bits=int(comp.attrs.get("width", "1")))
-        if name == "Comparator":
-            return resolve("Comparator", bits=int(comp.attrs.get("width", "1")))
-    if desc == "#Memory":
-        if name == "Register":
-            return resolve("Register", bits=int(comp.attrs.get("width", "1")))
-        if name == "Counter":
-            return resolve("Counter", bits=int(comp.attrs.get("width", "1")))
-    return None
+    return spec_for_component(project, comp)
 
 
 # ----- union-find ----------------------------------------------------------
@@ -92,22 +59,49 @@ def _wire_segments_along(start: Point, end: Point) -> list[Point]:
     if start[1] == end[1]:
         a, b = sorted((start[0], end[0]))
         return [(x, start[1]) for x in range(a, b + 1, 10)]
-    return [start, end]  # diagonal — preserve endpoints only
+    return []  # diagonal — not a conducting segment; Logisim refuses these
 
 
 def _build_nets(project: Project, circuit: Circuit) -> tuple[dict[Point, int], dict[str, int]]:
     uf = _UF()
     for wire in circuit.wires:
+        if is_diagonal(wire):
+            continue
         pts = _wire_segments_along(wire.start, wire.end)
+        for endpoint in (wire.start, wire.end):
+            if endpoint not in pts:
+                pts.append(endpoint)
         anchor = pts[0]
         for q in pts[1:]:
             uf.union(anchor, q)
 
-    # Tunnel labels create equivalences across the whole circuit.
+    # A port or wire end sitting on a segment interior is connected, even
+    # when the wire was not split at that grid point (Logisim T-junctions).
+    extras: list[Point] = []
+    for comp in circuit.components:
+        spec = _spec_for(project, comp)
+        if spec is None:
+            continue
+        for port in spec.ports:
+            extras.append((comp.loc[0] + port.dx, comp.loc[1] + port.dy))
+    for wire in circuit.wires:
+        extras.append(wire.start)
+        extras.append(wire.end)
+    for wire in circuit.wires:
+        if is_diagonal(wire):
+            continue
+        for point in extras:
+            if on_segment(point, wire.start, wire.end):
+                uf.union(wire.start, point)
+
+    # Tunnel labels create equivalences across the whole circuit. Logisim
+    # trims surrounding whitespace and ignores an empty label.
     tunnels_by_label: dict[str, list[Point]] = defaultdict(list)
     for c in circuit.components:
         if c.name == "Tunnel":
-            tunnels_by_label[c.attrs.get("label", "")].append(c.loc)
+            label = c.attrs.get("label", "").strip()
+            if label:
+                tunnels_by_label[label].append(c.loc)
     for label, locs in tunnels_by_label.items():
         if len(locs) <= 1:
             continue
@@ -164,7 +158,7 @@ def _describe(project: Project, circuit: Circuit) -> str:
     other: list[Component] = []
     for c in circuit.components:
         if c.name == "Pin":
-            if c.attrs.get("output", "false") == "true":
+            if is_output_pin(c.attrs):
                 output_pins.append(c)
             else:
                 input_pins.append(c)
@@ -210,7 +204,7 @@ def _describe(project: Project, circuit: Circuit) -> str:
                 continue
             pt = (c.loc[0] + spec.ports[0].dx, c.loc[1] + spec.ports[0].dy)
             nid = point_to_net.get(pt)
-            if nid is not None and (lbl := c.attrs.get("label")):
+            if nid is not None and (lbl := c.attrs.get("label", "").strip()):
                 net_tunnel_labels[nid].add(lbl)
             continue
         spec = _spec_for(project, c)
@@ -286,3 +280,120 @@ def describe_project(path: str) -> dict[str, Any]:
             for c in project.circuits
         ],
     }
+
+
+def _public_port(port: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "component": port["component"],
+        "type": port["type"],
+        "label": port["label"],
+        "port": port["port"],
+        "direction": port["direction"],
+        "at": [port["at"][0], port["at"][1]],
+    }
+
+
+def static_drc(project: Project, circuit: Circuit) -> dict[str, Any]:
+    """Shorts, floating inputs, pin crossings, and diagonal wires.
+
+    ``error_wires`` is filled in by the Java probe, not here.
+    """
+    point_to_net, _ = _build_nets(project, circuit)
+    ports: list[dict[str, Any]] = []
+    for comp in circuit.components:
+        spec = _spec_for(project, comp)
+        if spec is None:
+            continue
+        for port in spec.ports:
+            at = (comp.loc[0] + port.dx, comp.loc[1] + port.dy)
+            ports.append(
+                {
+                    "component": fmt_loc(comp.loc),
+                    "type": spec.type_key,
+                    "label": comp.attrs.get("label", ""),
+                    "port": port.label,
+                    "direction": port.direction,
+                    "at": at,
+                    "net": point_to_net.get(at),
+                }
+            )
+
+    grouped: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+    for port in ports:
+        grouped[port["net"]].append(port)
+
+    shorted_nets: list[dict[str, Any]] = []
+    floating_inputs: list[dict[str, Any]] = []
+    for net_id, members in grouped.items():
+        drivers = [item for item in members if item["direction"] == "out"]
+        if len(drivers) > 1:
+            shorted_nets.append(
+                {"net": net_id, "outputs": [_public_port(item) for item in drivers]}
+            )
+        if not drivers:
+            floating_inputs.extend(
+                _public_port(item) for item in members if item["direction"] == "in"
+            )
+
+    crossings: list[dict[str, Any]] = []
+    diagonals: list[dict[str, Any]] = []
+    for wire in circuit.wires:
+        if is_diagonal(wire):
+            diagonals.append({"from": list(wire.start), "to": list(wire.end)})
+            continue
+        for port in ports:
+            if on_segment(port["at"], wire.start, wire.end, interior=True):
+                crossings.append(
+                    {
+                        "from": list(wire.start),
+                        "to": list(wire.end),
+                        "port": _public_port(port),
+                    }
+                )
+    return {
+        "shorted_nets": shorted_nets,
+        "floating_inputs": floating_inputs,
+        "unintended_pin_crossings": crossings,
+        "diagonal_wires": diagonals,
+    }
+
+
+@mcp.tool()
+def check_circuit_drc(
+    path: str, circuit: str | None = None, probe_errors: bool = True
+) -> dict[str, Any]:
+    """Static design-rule check, plus a headless count of error-valued wires.
+
+    ``shorted_nets`` have more than one driving port. ``floating_inputs``
+    are inputs whose net has no driver. ``unintended_pin_crossings`` are
+    wires that pass across a component port without ending on it.
+    ``diagonal_wires`` are segments Logisim will reject. ``error_wires``
+    is how many wires carry ``Value.ERROR`` after a synchronous propagate;
+    it is ``None`` when the Logisim JAR or a JDK is not available.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"no such file: {path}")
+    project = parse(p)
+    name = circuit or project.main
+    c = project.require_circuit(name)
+    report = static_drc(project, c)
+    report["circuit"] = name
+    report["error_wires"] = None
+    any_diagonals = any(
+        is_diagonal(wire)
+        for project_circuit in project.circuits
+        for wire in project_circuit.wires
+    )
+    if probe_errors and not any_diagonals:
+        from ..config import HelperUnavailable, JavaTooOld
+        from ..runner.java import LogisimNotFound, count_error_wires
+
+        try:
+            report["error_wires"] = count_error_wires(str(p), name)
+        except (LogisimNotFound, HelperUnavailable, JavaTooOld, OSError, ValueError):
+            # The static report is still useful on a JRE-only install,
+            # when the optional helper cannot be compiled, or when
+            # Logisim's preflight rejects a different circuit.
+            report["error_wires"] = None
+    return report

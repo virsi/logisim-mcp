@@ -17,17 +17,23 @@ XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>'
 
 
 def _dedupe_wires(wires: list[Wire]) -> list[Wire]:
-    """Drop duplicate wires (ignoring endpoint order). Logisim tolerates
-    duplicates but they show up as redundant clutter in the GUI."""
-    seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
-    out: list[Wire] = []
-    for w in wires:
-        key = (w.start, w.end) if w.start < w.end else (w.end, w.start)
-        if key in seen:
+    """Drop duplicate wires (ignoring endpoint order).
+
+    Attributes on a later copy are kept when the first copy omitted them,
+    so a second ``buswidthpos`` is not thrown away with the duplicate.
+    """
+    order: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    merged: dict[tuple[tuple[int, int], tuple[int, int]], Wire] = {}
+    for wire in wires:
+        key = (wire.start, wire.end) if wire.start <= wire.end else (wire.end, wire.start)
+        current = merged.get(key)
+        if current is None:
+            merged[key] = Wire(start=wire.start, end=wire.end, attrs=dict(wire.attrs))
+            order.append(key)
             continue
-        seen.add(key)
-        out.append(w)
-    return out
+        for name, value in wire.attrs.items():
+            current.attrs.setdefault(name, value)
+    return [merged[key] for key in order]
 
 
 def _attr(name: str, value: str) -> str:
@@ -57,10 +63,12 @@ def _comp(comp: Component, indent: str) -> list[str]:
 
 
 def _wire(w: Wire, indent: str) -> str:
+    extra = "".join(f" {_attr(name, val)}" for name, val in w.attrs.items())
     return (
         f"{indent}<wire "
         f"{_attr('from', fmt_loc(w.start))} "
-        f"{_attr('to', fmt_loc(w.end))}/>"
+        f"{_attr('to', fmt_loc(w.end))}"
+        f"{extra}/>"
     )
 
 
